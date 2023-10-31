@@ -1,0 +1,359 @@
+---
+title: "Scseq_preprocessing"
+author: "Khang"
+date: "r Sys.Date()"
+output: 
+  pdf_document: 
+    keep_tex: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE)
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = FALSE,
+                      cache = TRUE)
+
+library(immunarch)
+library(tidyverse)
+library(RColorBrewer)
+library(cowplot)
+library(seqinr)
+```
+
+```{r load_data}
+files_mixcr <- list.files("./1_Ig_all_unfiltered_contigs/", full.names = T)
+sample_all <- map(.x = files_mixcr, function (x) read_tsv(x))
+names(sample_all) <- str_split(list.files("./1_Ig_all_unfiltered_contigs/"),"\\.", simplify = T)[,1]
+count_mixcr_out <- tibble(Sample = names(sample_all), 
+                          Count = map(sample_all, function(x) nrow(x)) %>% unlist,
+                          Type = "MiXCR_out")
+```
+
+# Check if all contigs have CDR3 and defined isotype (no missing aaseqCDR3, bestVGene, bestJGene, or bestCGene)
+
+```{r Contigs_with_CDR3_isotype, fig.height=5, fig.width=8}
+sample_all <- map(sample_all, function (x)
+  filter(.data = x, !is.na(aaSeqCDR3) & !is.na(bestVGene) & !is.na(bestJGene) & !is.na(bestCGene)))
+
+count_sample_all <- tibble(Sample = names(sample_all), 
+                           Count = map(sample_all, function(x) nrow(x)) %>% unlist,
+                           Type = "Defined_isotype")
+ggplot(count_sample_all) +
+  geom_col(aes(x = Sample, y = Count, fill = Sample), color = "black") +
+  scale_fill_brewer(type = "qual", palette = "Set3") +
+  theme_half_open() +
+  theme(legend.position = "right", axis.text.x = element_text(angle = 90)) +
+  geom_text(aes(x = Sample, y = Count, label = Count), vjust = -0.2) +
+  labs(title = "Contigs with CDR3 and defined isotype")
+```
+
+# Check for cdr3_barcode contaminants between samples (obsolete)
+
+```{r eval=FALSE, include=FALSE}
+#Pair cdr3aa with corresponding barcodes
+paired_cdr3_barcode <- list()
+for (i in 1:length(sample_all)){
+    paired_cdr3_barcode [[i]]<- unlist(sapply(1:nrow(sample_all[[i]]), function(x) {
+        paste(sample_all[[i]][x,"cdr3"], 
+              unlist(sample_all[[i]][x,"barcode"]), sep = "_")
+      }))     
+}
+
+#How many cdr3-barcode is shared across samples
+cdr3_barcode_intersected <- vector("list", length(paired_cdr3_barcode))
+for(i in 1:length(paired_cdr3_barcode)){
+    for(j in 1:length(paired_cdr3_barcode)){
+    
+        if(i==j){
+            
+                }
+        else{
+    cdr3_barcode_intersected[[i]][[j]] <- intersect(unique(paired_cdr3_barcode[[i]]), unique(paired_cdr3_barcode[[j]]))
+            }
+                                            }
+}
+
+# Make a list of CDR3-barcode that are shared across samples (contaminants)
+contaminants_cdr3_barcode <- unique(unlist(cdr3_barcode_intersected))
+# Make a list of CDR3-barcode that are NOT shared across samples (to keep)
+no_contaminants_cdr3_barcode <- lapply(paired_cdr3_barcode, function(x) x[!x %in% contaminants_cdr3_barcode])
+# How many CDR3-barcode that we kept
+sapply(no_contaminants_cdr3_barcode, length)
+# Get rid of barcodes to get count right, remove duplicates cdr3 seqs
+no_contaminants_cdr3_barcode_remove_barcodes <- sapply(no_contaminants_cdr3_barcode, function(x) unique(gsub("(.*)_.*", "\\1", x)))
+
+# Filter the data, keep only sequences that have CDR3 in the no contaminants list
+sample_all_no_contaminants <- sample_all
+for (i in 1:length(sample_all)){
+  sample_all_no_contaminants[[i]] <- sample_all[[i]][sample_all[[i]]$cdr3 %in% no_contaminants_cdr3_barcode_remove_barcodes[[i]],]
+}
+
+sapply(sample_all_no_contaminants,function (x) length(x$cdr3))
+```
+
+# Filter for singlet droplets (1 cell barcode appear only twice)
+
+```{r contigs_singlets, fig.height=5, fig.width=8}
+# List out barcode_two in all samples
+barcode_two <- sapply(sample_all, function(x) names(which((table(x$tagValueCELL)) == "2")))
+
+# Select for rows that have barcode_two
+#sample_1[which(sample_1$barcode %in% barcode_two_all$sample_1),]
+sample_all_paired <- map2(.x = sample_all, .y = barcode_two, function (x,y) x[which(x$tagValueCELL %in% y),])
+
+count_sample_all_paired <- tibble(Sample = names(sample_all_paired), 
+                           Count = map(sample_all_paired, function(x) nrow(x)) %>% unlist,
+                           Type = "Singlets")
+
+ggplot(count_sample_all_paired) +
+  geom_col(aes(x = Sample, y = Count, fill = Sample), color = "black") +
+  scale_fill_brewer(type = "qual", palette = "Set3") +
+  theme_half_open() +
+  theme(legend.position = "right", axis.text.x = element_text(angle = 90)) +
+  geom_text(aes(x = Sample, y = Count, label = Count), vjust = -0.2) +
+  labs(title = "Contigs with 2 barcodes (single cell droplets)")
+```
+
+# Check if the barcode pairing is between one heavy and one light chain and filter
+
+```{r contigs_paired_correct, fig.height=5, fig.width=8}
+#test_1 <- sample_all_paired$sample_1_contigs %>% group_by(tagValueCELL) %>% mutate(chainsPair = paste(chains, collapse = ";"))
+
+#test_2 <- filter(test_1, chainsPair == "IGH;IGK"| chainsPair == "IGH;IGL"|
+       #chainsPair == "IGK;IGH"| chainsPair == "IGL;IGH")
+
+# Group the df by cell barcode and paste the chain name together
+sample_all_paired_2 <- map(sample_all_paired, function(x) 
+                           x %>% group_by(tagValueCELL) %>% 
+                           mutate(chainsPair = paste(chains, collapse = ";")))
+
+# Filter the df by allowing only heavy and light chain pairing
+sample_all_paired_2 <- map(sample_all_paired_2, function(x)
+                           filter(x, chainsPair == "IGH;IGK"| chainsPair == "IGH;IGL"|
+                                  chainsPair == "IGK;IGH"| chainsPair == "IGL;IGH"))
+# Double check the pairing
+lapply(sample_all_paired_2, function(x) table(x$chainsPair))
+
+count_sample_all_paired_2 <- tibble(Sample = names(sample_all_paired_2), 
+                           Count = map(sample_all_paired_2, function(x) nrow(x)) %>% unlist,
+                           Type = "Correct_pairing")
+ggplot(count_sample_all_paired_2) +
+  geom_col(aes(x = Sample, y = Count, fill = Sample), color = "black") +
+  scale_fill_brewer(type = "qual", palette = "Set3") +
+  theme_half_open() +
+  theme(legend.position = "right", axis.text.x = element_text(angle = 90)) +
+  geom_text(aes(x = Sample, y = Count, label = Count), vjust = -0.2) +
+  labs(title = "Contigs with correct chain pairing (HC/LC)")
+```
+
+# Save the contig outputs
+
+```{r}
+# Save the filtered contigs
+#map2(.x = sample_all_paired_2, .y = names(sample_all_paired_2), function (x,y) write_tsv(x, file = paste0("./2_Ig_all_filtered_contigs/",y,".txt")))
+```
+
+```{r eval=FALSE, include=FALSE}
+# Check if a clonotype by mixcr would paired with different VH or VK/L
+# Check cloneId 18 (light chain) in sample_1_contigs
+barcode_clone_18 <- filter(sample_all_paired_2$sample_1_contigs, cloneId == 18) %>% .$tagValueCELL
+
+paired_clone_18 <- filter(sample_all_paired_2$sample_1_contigs, tagValueCELL %in% barcode_clone_18)
+
+# In the case of light chain clonotypes, if a peptide matches a clonotype, the heavy chain can be any of the other heavy chains paired to that light chain clonotype by cell barcode
+
+# Check cloneId 202 (heavy chain) in sample_1_contigs
+barcode_clone_202 <- filter(sample_all_paired_2$sample_1_contigs, cloneId == 202) %>% .$tagValueCELL
+
+paired_clone_202 <- filter(sample_all_paired_2$sample_1_contigs, tagValueCELL %in% barcode_clone_202)
+
+# The same situation apply for heavy chain clonotypes, albeit less so, most of the contigs in the heavy chain clonotypes have the same light chain pairings
+
+arrange(paired_clone_18, tagValueCELL) %>% select(cloneId, tagValueCELL, aaSeqCDR3) %>% head(n = 10)
+
+arrange(paired_clone_202, tagValueCELL) %>% select(cloneId, tagValueCELL, aaSeqCDR3)
+```
+In the case of light chain clonotypes, if a peptide matches a clonotype, the heavy chain can be any of the other heavy chains paired to that light chain clonotype by cell barcode. The same situation apply for heavy chain clonotypes, albeit less so, most of the contigs in the heavy chain clonotypes have the same light chain pairings since heavy chain clonotype are more diverse. This would complicate recovery in MS if a peptide match to one chain, we may not know the exact other chain might be, but it will be a shortlist.
+```{r eval=FALSE, include=FALSE}
+test_3 <- sample_all_paired_2$sample_1_contigs %>% group_by(cloneId) %>% 
+  summarise(tagValueCELL = paste(tagValueCELL, collapse = ";"),
+            readCount = sum(readCount), uniqueUMICount = sum(uniqueUMICount),
+            cellCount = length(cloneId), targetSequences = unique(targetSequences),
+            targetQualities = unique(targetQualities),
+            allVHitsWithScore = unique(allVHitsWithScore),
+            allDHitsWithScore = unique(allDHitsWithScore),
+            allJHitsWithScore = unique(allJHitsWithScore),
+            allCHitsWithScore = unique(allCHitsWithScore),
+            allVAlignments = unique(allVAlignments),
+            allDAlignments = unique(allDAlignments),
+            allJAlignments = unique(allJAlignments),
+            allCAlignments = unique(allCAlignments),
+            nSeqFR1 = unique(nSeqFR1), minQualFR1 = unique(minQualFR1),
+            nSeqCDR1 = unique(nSeqCDR1), minQualCDR1 = unique(minQualCDR1),
+            nSeqFR2 = unique(nSeqFR2), minQualFR2 = unique(minQualFR2),
+            nSeqCDR2 = unique(nSeqCDR2), minQualCDR2 = unique(minQualCDR2),
+            nSeqFR3 = unique(nSeqFR3), minQualFR3 = unique(minQualFR3),
+            nSeqCDR3 = unique(nSeqCDR3), minQualCDR3 = unique(minQualCDR3),
+            nSeqFR4 = unique(nSeqFR4), minQualFR4 = unique(minQualFR4),
+            aaSeqFR1 = unique(aaSeqFR1), aaSeqCDR1 = unique(aaSeqCDR1),
+            aaSeqFR2 = unique(aaSeqFR2), aaSeqCDR2 = unique(aaSeqCDR2),
+            aaSeqFR3 = unique(aaSeqFR3), aaSeqCDR3 = unique(aaSeqCDR3),
+            aaSeqFR4 = unique(aaSeqFR4), refPoints = unique(refPoints),
+            bestVGene = unique(bestVGene), bestDGene = unique(bestDGene),
+            bestJGene = unique(bestJGene), bestCGene = unique(bestCGene),
+            chains = unique(chains), nSeqVDJRegion = unique(nSeqVDJRegion),
+            aaSeqVDJRegion = unique(aaSeqVDJRegion),
+            aaSeqImputedVDJRegion = unique(aaSeqImputedVDJRegion))
+```
+
+# Track how much contigs are lost after all pre-processing steps
+```{r contigs_track, fig.height=8, fig.width=8}
+count_processing <- rbind(count_mixcr_out, count_sample_all, count_sample_all_paired,
+                          count_sample_all_paired_2)
+count_processing <- count_processing %>% group_by(Sample) %>% mutate(Proportion = Count/max(Count))
+
+ggplot(count_processing) +
+  geom_step(aes(x = factor(Type, levels = c("MiXCR_out", "Defined_isotype", "Singlets", "Correct_pairing")), y = Count, group = Sample, color = Sample)) +
+  geom_point(aes(x = factor(Type, levels = c("MiXCR_out", "Defined_isotype", "Singlets", "Correct_pairing")), y = Count, group = Sample, color = Sample)) +
+  geom_text(aes(x = factor(Type, levels = c("MiXCR_out", "Defined_isotype", "Singlets", "Correct_pairing")), y = Count, group = Sample, color = Sample, label = Count), hjust = 1.2, check_overlap = TRUE) +
+  scale_color_brewer(type = "qual", palette = "Paired") +
+  theme_half_open() +
+  theme(legend.position = "right", axis.text.x = element_text(angle = 0)) +
+  labs(title = "Contigs remaining after processing", x = "Processing step")
+```
+\newpage
+```{r contigs_track_prop, fig.height=8, fig.width=8}
+ggplot(count_processing) +
+  geom_step(aes(x = factor(Type, levels = c("MiXCR_out", "Defined_isotype", "Singlets", "Correct_pairing")), y = Proportion, group = Sample, color = Sample)) +
+  geom_point(aes(x = factor(Type, levels = c("MiXCR_out", "Defined_isotype", "Singlets", "Correct_pairing")), y = Proportion, group = Sample, color = Sample)) +
+  geom_text(aes(x = factor(Type, levels = c("MiXCR_out", "Defined_isotype", "Singlets", "Correct_pairing")), y = Proportion, group = Sample, color = Sample, label = round(Proportion,2)), hjust = 1.2, check_overlap = TRUE) +
+  scale_color_brewer(type = "qual", palette = "Paired") +
+  theme_half_open() +
+  theme(legend.position = "right", axis.text.x = element_text(angle = 0)) +
+  labs(title = "Contigs proportion remaining after processing", x = "Processing step")
+
+```
+
+Overall, we lose the majority of contigs after several steps of pre-processing the data. Until the last step, we retained from 62% data in the best case (sample 4) to only 12% in the worst case (sample 8). The biggest loss of data occurred during the filtering for singlets, as expected, with loss averaging around 50% of contigs.
+
+```{r fig.height=6.5, fig.width=5}
+p_count_processing <- ggplot(data = count_processing %>% filter(Type == "Correct_pairing"), aes(x = Sample, y = Proportion)) +
+  geom_col(fill = "#88C790") +
+  geom_text(aes(label = round(Proportion,2)), vjust = -0.2) +
+  scale_x_discrete(labels = str_split(names(sample_all), "_", simplify = T)[,1]) +
+  scale_y_continuous(breaks = seq(0,1, by = 0.1), limits = c(0,1)) +
+  theme_half_open() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(x = "Sample", y = "Proportion of contigs remaining")
+  
+p_count_processing
+
+#ggsave("./figures/contig_count_d1.pdf", p_count_processing, height = 6.5, width = 5, dpi = 600)
+```
+
+
+# Collapse the contigs into clonotypes
+
+```{r eval=FALSE, include=FALSE}
+# Split the samples into heavy and light chain
+# Check how many cells barcode a clonotype has (by cloneID)
+lapply(sample_all_paired_2, function(x) table(table(x$cloneId)))
+
+# Collapse contigs into clonotypes by: group the rows by cloneID, paste the cell barcodes together with ;, sum up the readCount and unique UMI count columns, create a new cellCount column by counting the number of rows in each group, the remaining columns SHOULD be identical, and just take the unique value of that.
+
+sample_all_clonotypes <- map(sample_all_paired_2, function (x)
+  x %>% group_by(cloneId) %>% 
+  summarise(tagValueCELL = paste(tagValueCELL, collapse = ";"),
+            readCount = sum(readCount), uniqueUMICount = sum(uniqueUMICount),
+            cellCount = length(cloneId), targetSequences = unique(targetSequences),
+            targetQualities = unique(targetQualities),
+            allVHitsWithScore = unique(allVHitsWithScore),
+            allDHitsWithScore = unique(allDHitsWithScore),
+            allJHitsWithScore = unique(allJHitsWithScore),
+            allCHitsWithScore = unique(allCHitsWithScore),
+            allVAlignments = unique(allVAlignments),
+            allDAlignments = unique(allDAlignments),
+            allJAlignments = unique(allJAlignments),
+            allCAlignments = unique(allCAlignments),
+            nSeqFR1 = unique(nSeqFR1), minQualFR1 = unique(minQualFR1),
+            nSeqCDR1 = unique(nSeqCDR1), minQualCDR1 = unique(minQualCDR1),
+            nSeqFR2 = unique(nSeqFR2), minQualFR2 = unique(minQualFR2),
+            nSeqCDR2 = unique(nSeqCDR2), minQualCDR2 = unique(minQualCDR2),
+            nSeqFR3 = unique(nSeqFR3), minQualFR3 = unique(minQualFR3),
+            nSeqCDR3 = unique(nSeqCDR3), minQualCDR3 = unique(minQualCDR3),
+            nSeqFR4 = unique(nSeqFR4), minQualFR4 = unique(minQualFR4),
+            aaSeqFR1 = unique(aaSeqFR1), aaSeqCDR1 = unique(aaSeqCDR1),
+            aaSeqFR2 = unique(aaSeqFR2), aaSeqCDR2 = unique(aaSeqCDR2),
+            aaSeqFR3 = unique(aaSeqFR3), aaSeqCDR3 = unique(aaSeqCDR3),
+            aaSeqFR4 = unique(aaSeqFR4), refPoints = unique(refPoints),
+            bestVGene = unique(bestVGene), bestDGene = unique(bestDGene),
+            bestJGene = unique(bestJGene), bestCGene = unique(bestCGene),
+            chains = unique(chains), nSeqVDJRegion = unique(nSeqVDJRegion),
+            aaSeqVDJRegion = unique(aaSeqVDJRegion),
+            aaSeqImputedVDJRegion = unique(aaSeqImputedVDJRegion)))
+names(sample_all_clonotypes) <- str_replace_all(names(sample_all_clonotypes), "contigs", "clonotypes")
+# Save the full clonotypes
+#map2(.x = sample_all_clonotypes, .y = names(sample_all_clonotypes), function (x,y) write_tsv(x, file = paste0("./3_Ig_all_filtered_clonotypes/",y,".txt")))
+
+# Split each sample into heavy and light chain
+sample_all_clonotypes_heavy <- map(sample_all_clonotypes, function(x)
+  x %>% filter(chains == "IGH"))
+sample_all_clonotypes_light <- map(sample_all_clonotypes, function(x)
+  x %>% filter(chains != "IGH"))
+
+# Save the split clonotypes
+#map2(.x = sample_all_clonotypes_heavy, .y = names(sample_all_clonotypes_heavy), function (x,y) write_tsv(x, file = paste0("./4_Ig_all_clonotypes_split/",y,"_heavy.txt")))
+#map2(.x = sample_all_clonotypes_light, .y = names(sample_all_clonotypes_light), function (x,y) write_tsv(x, file = paste0("./4_Ig_all_clonotypes_split/",y,"_light.txt")))
+```
+
+# Split each sample into sub-samples by isotypes
+```{r eval=FALSE, include=FALSE}
+# Check the number of contigs present in each sample
+map(sample_all_clonotypes, function (x) table(x$bestCGene))
+
+# In each sample, filter into a new df by C.name into IGHA, IGHD, IGHE, IGHG, IGHM, IGKC, IGLC
+
+# Filter for all IgA sub-samples
+sample_all_IgA <- map(sample_all_clonotypes, function(x)
+  filter(x, str_detect(x$bestCGene, "^IGHA")))
+names(sample_all_IgA) <- str_replace_all(names(sample_all_IgA), "clonotypes", "IgA")
+
+# Filter for all IgD sub-samples
+sample_all_IgD <- map(sample_all_clonotypes, function(x)
+  filter(x, str_detect(x$bestCGene, "^IGHD")))
+names(sample_all_IgD) <- str_replace_all(names(sample_all_IgD), "clonotypes", "IgD")
+
+# Filter for all IgE sub-samples
+sample_all_IgE <- map(sample_all_clonotypes, function(x)
+  filter(x, str_detect(x$bestCGene, "^IGHE")))
+names(sample_all_IgE) <- str_replace_all(names(sample_all_IgE), "clonotypes", "IgE")
+
+# Filter for all IgG sub-samples
+sample_all_IgG <- map(sample_all_clonotypes, function(x)
+  filter(x, str_detect(x$bestCGene, "^IGHG")))
+names(sample_all_IgG) <- str_replace_all(names(sample_all_IgG), "clonotypes", "IgG")
+
+# Filter for all IgK sub-samples
+sample_all_IgK <- map(sample_all_clonotypes, function(x)
+  filter(x, str_detect(x$bestCGene, "^IGKC")))
+names(sample_all_IgK) <- str_replace_all(names(sample_all_IgK), "clonotypes", "IgK")
+
+# Filter for all IgL sub-samples
+sample_all_IgL <- map(sample_all_clonotypes, function(x)
+  filter(x, str_detect(x$bestCGene, "^IGLC")))
+names(sample_all_IgL) <- str_replace_all(names(sample_all_IgL), "clonotypes", "IgL")
+
+# Filter for all IgM sub-samples
+sample_all_IgM <- map(sample_all_clonotypes, function(x)
+  filter(x, str_detect(x$bestCGene, "^IGHM")))
+names(sample_all_IgM) <- str_replace_all(names(sample_all_IgM), "clonotypes", "IgM")
+
+# Create a list to store the split isotypes
+sample_all_isotypes <- c(sample_all_IgA, sample_all_IgD, sample_all_IgG, sample_all_IgK, sample_all_IgL, sample_all_IgM) # Don't include IgE this time because there is no IgE in this dataset
+
+# Add the sc suffix the know this is single-cell data
+names(sample_all_isotypes) <- paste(names(sample_all_isotypes), "sc", sep = "_")
+# Write the data to tsv files
+#map2(.x = sample_all_isotypes, .y = names(sample_all_isotypes), function (x,y) write_tsv(x, file = paste0("./5_Ig_all_clonotypes_isotypes/",y,".txt")))
+```

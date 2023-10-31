@@ -1,0 +1,96 @@
+---
+title: "Scseq_preprocessing_D1"
+author: "Khang"
+date: "r Sys.Date()"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE)
+knitr::opts_chunk$set(dev = "pdf",
+                      dpi = 600,
+                      cache = TRUE)
+
+library(immunarch)
+library(tidyverse)
+library(RColorBrewer)
+library(cowplot)
+library(seqinr)
+```
+
+```{r load_data}
+files_mixcr <- list.files("./0_Ig_all_unfiltered_contigs/", full.names = T)
+sample_all <- map(.x = files_mixcr, function (x) read_tsv(x))
+names(sample_all) <- str_split(list.files("./0_Ig_all_unfiltered_contigs/"),"\\.", simplify = T)[,1]
+count_mixcr_out <- tibble(Sample = names(sample_all), 
+                          Count = map(sample_all, function(x) nrow(x)) %>% unlist,
+                          Type = "MiXCR_out")
+```
+
+# Check if all contigs have CDR3 and defined isotype (no missing aaseqCDR3, bestVGene, bestJGene, or bestCGene)
+```{r Contigs_with_CDR3_isotype, fig.height=6, fig.width=12}
+sample_all <- map(sample_all, function (x)
+  filter(.data = x, !is.na(aaSeqCDR3) & !is.na(bestVGene) & !is.na(bestJGene) & !is.na(bestCGene)))
+
+count_sample_all <- tibble(Sample = names(sample_all), 
+                           Count = map(sample_all, function(x) nrow(x)) %>% unlist,
+                           Type = "Defined_isotype")
+```
+
+# Filter for singlet droplets (1 cell barcode appear only twice)
+```{r contigs_singlets, fig.height=6, fig.width=12}
+# List out barcode_two in all samples
+barcode_two <- sapply(sample_all, function(x) names(which((table(x$tagValueCELL)) == "2")))
+
+# Select for rows that have barcode_two
+#sample_1[which(sample_1$barcode %in% barcode_two_all$sample_1),]
+sample_all_paired <- map2(.x = sample_all, .y = barcode_two, function (x,y) x[which(x$tagValueCELL %in% y),])
+
+count_sample_all_paired <- tibble(Sample = names(sample_all_paired), 
+                           Count = map(sample_all_paired, function(x) nrow(x)) %>% unlist,
+                           Type = "Singlets")
+```
+
+# Check if the barcode pairing is between one heavy and one light chain and filter
+```{r contigs_paired_correct, fig.height=6, fig.width=12}
+# Group the df by cell barcode and paste the chain name together
+sample_all_paired_2 <- map(sample_all_paired, function(x) 
+                           x %>% group_by(tagValueCELL) %>% 
+                           mutate(chainsPair = paste(chains, collapse = ";")))
+
+# Filter the df by allowing only heavy and light chain pairing
+sample_all_paired_2 <- map(sample_all_paired_2, function(x)
+                           filter(x, chainsPair == "IGH;IGK"| chainsPair == "IGH;IGL"|
+                                  chainsPair == "IGK;IGH"| chainsPair == "IGL;IGH"))
+# Double check the pairing
+lapply(sample_all_paired_2, function(x) table(x$chainsPair))
+
+count_sample_all_paired_2 <- tibble(Sample = names(sample_all_paired_2), 
+                           Count = map(sample_all_paired_2, function(x) nrow(x)) %>% unlist,
+                           Type = "Correct_pairing")
+```
+
+# Track how much contigs are lost after all pre-processing steps
+```{r contigs_track}
+count_processing <- rbind(count_mixcr_out, count_sample_all_paired_2)
+count_processing <- count_processing %>% group_by(Sample) %>% mutate(Proportion = Count/max(Count))
+```
+
+```{r fig.height=6, fig.width=4}
+p_count_processing <- ggplot(data = count_processing %>% filter(Type == "Correct_pairing"), aes(x = Sample, y = Proportion)) +
+  geom_col(fill = "#588DE0") +
+  geom_text(aes(label = round(Proportion,2)), vjust = -0.2) +
+  scale_x_discrete(labels = c("1","2","3","4","5","6","7","8")) +
+  scale_y_continuous(breaks = seq(0,1, by = 0.1), limits = c(0,1)) +
+  theme_half_open() +
+  labs(x = "Sample", y = "Proportion of contigs remaining")
+  
+p_count_processing
+
+#ggsave("./figures/contig_count_d1.pdf", p_count_processing, height = 6, width = 4, dpi = 600)
+```
+
+
+

@@ -1,0 +1,215 @@
+---
+title: "Bulkseq_Alchemab_report"
+author: "Khang"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document: 
+    keep_tex: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE)
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300, out.width = "100%", out.height = "100%",
+                      echo = FALSE,
+                      cache = TRUE)
+```
+
+```{r libs, include=FALSE}
+library(immunarch)
+library(tidyverse)
+library(vegan)
+library(pheatmap)
+library(ggplotify)
+library(cowplot)
+library(reshape2)
+library(seqinr)
+library(GGally)
+library(RColorBrewer)
+library(magick)
+library(data.table)
+library(cluster)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Load the Alchemab-formatted data (only do this on server with high memory)
+
+path_h <- list.files("./bulk_vh_10x/1_Alchemab_processed/", full.names = T)
+data_alchemab_heavy <- lapply(path_h, function (x) fread(x))
+
+# Subset the Alchemab data to only a few columns
+data_alchemab_heavy_cgene <- lapply(data_alchemab_heavy, function(x)
+  select(x, c("sequence","c_call")) %>% as.data.frame())
+names(data_alchemab_heavy_cgene) <- str_split(list.files("./bulk_vh_10x/1_Alchemab_processed/"), "\\.", simplify = T)[,1]
+
+# Match the column name in immunarch
+for(i in 1:length(data_alchemab_heavy_cgene)){
+colnames(data_alchemab_heavy_cgene[[i]]) <- c("Sequence","C.name")}
+
+# Save the file in a tsv format
+map2(data_alchemab_heavy_cgene, names(data_alchemab_heavy_cgene), function(x,y) write_tsv(x,paste0("./bulk_vh_10x/1.5_Alchemab_cgene/", y, ".tsv")))
+
+# Do the same for the light chains
+
+path_l <- list.files("./bulk_vl_10x/1_Alchemab_processed/", full.names = T)
+data_alchemab_light <- lapply(path_l, function (x) fread(x))
+
+data_alchemab_light_cgene <- lapply(data_alchemab_light, function(x)
+  select(x, c("sequence","c_call")) %>% as.data.frame())
+names(data_alchemab_light_cgene) <- str_split(list.files("./bulk_vl_10x/1_Alchemab_processed/"), "\\.", simplify = T)[,1]
+
+map2(data_alchemab_light_cgene, names(data_alchemab_light_cgene), function(x,y) write_tsv(x,paste0("./bulk_vl_10x/1.5_Alchemab_cgene/", y, ".tsv")))
+```
+
+```{r eval=FALSE, include=FALSE}
+# Load the Alchemab data into immunarch
+data_heavy <- repLoad("./bulk_vh_10x/1.5_Alchemab_cgene/")
+
+# Add the C.name column into each immunarch object, translate the FR4, paste the VDJ sequence
+for (i in 1:length(data_heavy$data)){
+  data_heavy$data[[i]]$C.name <- str_split(names(data_heavy$data[i]), "_", simplify = T)[,3]
+  data_heavy$data[[i]]$FR4.aa <- bunch_translate(data_heavy$data[[i]]$FR4.nt)
+  data_heavy$data[[i]]$Sequence.aa <- paste0(data_heavy$data[[i]]$FR1.aa, data_heavy$data[[i]]$CDR1.aa,    data_heavy$data[[i]]$FR2.aa, data_heavy$data[[i]]$CDR2.aa, data_heavy$data[[i]]$FR3.aa,        data_heavy$data[[i]]$CDR3.aa, data_heavy$data[[i]]$FR4.aa)
+}
+
+# Make a new list with combined isotype and order the dfs by descending number of clones
+test <- list(SE_0001621_IgA = rbind(data_heavy$data$SE_0001621_IGHA1, data_heavy$data$SE_0001621_IGHA2))
+arrange(test$SE_0001621_IgA, desc(Clones))
+
+data_heavy_2 <- data_heavy
+data_heavy_2$data <- list(
+  SE_0001621_IgA = rbind(data_heavy$data$SE_0001621_IGHA1, data_heavy$data$SE_0001621_IGHA2),
+  SE_0001621_IgD = data_heavy$data$SE_0001621_IGHD,
+  SE_0001621_IgG = rbind(data_heavy$data$SE_0001621_IGHG1, data_heavy$data$SE_0001621_IGHG2,
+                         data_heavy$data$SE_0001621_IGHG3, data_heavy$data$SE_0001621_IGHG4),
+  SE_0001621_IgM = data_heavy$data$SE_0001621_IGHM,
+  SE_0001622_IgA = rbind(data_heavy$data$SE_0001622_IGHA1, data_heavy$data$SE_0001622_IGHA2),
+  SE_0001622_IgD = data_heavy$data$SE_0001622_IGHD,
+  SE_0001622_IgE = data_heavy$data$SE_0001622_IGHE,
+  SE_0001622_IgG = rbind(data_heavy$data$SE_0001622_IGHG1, data_heavy$data$SE_0001622_IGHG2, data_heavy$data$SE_0001622_IGHG3, data_heavy$data$SE_0001622_IGHG4),
+  SE_0001622_IgM = data_heavy$data$SE_0001622_IGHM,
+  SE_0001623_IgA = rbind(data_heavy$data$SE_0001623_IGHA1, data_heavy$data$SE_0001623_IGHA2),
+  SE_0001623_IgD = data_heavy$data$SE_0001623_IGHD,
+  SE_0001623_IgG = rbind(data_heavy$data$SE_0001623_IGHG1, data_heavy$data$SE_0001623_IGHG2, data_heavy$data$SE_0001623_IGHG3, data_heavy$data$SE_0001623_IGHG4),
+  SE_0001623_IgM = data_heavy$data$SE_0001623_IGHM,
+  SE_0001624_IgA = rbind(data_heavy$data$SE_0001624_IGHA1, data_heavy$data$SE_0001624_IGHA2),
+  SE_0001624_IgD = data_heavy$data$SE_0001624_IGHD,
+  SE_0001624_IgE = data_heavy$data$SE_0001624_IGHE,
+  SE_0001624_IgG = rbind(data_heavy$data$SE_0001624_IGHG1, data_heavy$data$SE_0001624_IGHG2, data_heavy$data$SE_0001624_IGHG3, data_heavy$data$SE_0001624_IGHG4),
+  SE_0001624_IgM = data_heavy$data$SE_0001624_IGHM,
+  SE_0001625_IgA = rbind(data_heavy$data$SE_0001625_IGHA1, data_heavy$data$SE_0001625_IGHA1),
+  SE_0001625_IgD = data_heavy$data$SE_0001625_IGHD,
+  SE_0001625_IgE = data_heavy$data$SE_0001625_IGHE,
+  SE_0001625_IgG = rbind(data_heavy$data$SE_0001625_IGHG1, data_heavy$data$E_0001625_IGHG2, data_heavy$data$SE_0001625_IGHG3, data_heavy$data$SE_0001625_IGHG4),
+  SE_0001625_IgM = data_heavy$data$SE_0001625_IGHM,
+  SE_0001626_IgA = rbind(data_heavy$data$SE_0001626_IGHA1, data_heavy$data$SE_0001626_IGHA2),
+  SE_0001626_IgD = data_heavy$data$SE_0001626_IGHD,
+  SE_0001626_IgG = rbind(data_heavy$data$SE_0001626_IGHG1, data_heavy$data$SE_0001626_IGHG2, data_heavy$data$SE_0001626_IGHG3, data_heavy$data$SE_0001626_IGHG4),
+  SE_0001626_IgM = data_heavy$data$SE_0001626_IGHM,
+  SE_0001627_IgA = rbind(data_heavy$data$SE_0001627_IGHA1, data_heavy$data$SE_0001627_IGHA2),
+  SE_0001627_IgD = data_heavy$data$SE_0001627_IGHD,
+  SE_0001627_IgE = data_heavy$data$SE_0001627_IGHE,
+  SE_0001627_IgG = rbind(data_heavy$data$SE_0001627_IGHG1, data_heavy$data$SE_0001627_IGHG2, data_heavy$data$SE_0001627_IGHG3, data_heavy$data$SE_0001627_IGHG4),
+  SE_0001627_IgM = data_heavy$data$SE_0001627_IGHM,
+  SE_0001628_IgA = rbind(data_heavy$data$SE_0001628_IGHA1, data_heavy$data$SE_0001628_IGHA2),
+  SE_0001628_IgD = data_heavy$data$SE_0001628_IGHD,
+  SE_0001628_IgG = rbind(data_heavy$data$SE_0001628_IGHG1, data_heavy$data$SE_0001628_IGHG2, data_heavy$data$SE_0001628_IGHG3, data_heavy$data$SE_0001628_IGHG4),
+  SE_0001628_IgM = data_heavy$data$SE_0001628_IGHM,
+  SE_0001629_IgA = rbind(data_heavy$data$SE_0001629_IGHA1, data_heavy$data$SE_0001629_IGHA2),
+  SE_0001629_IgD = data_heavy$data$SE_0001629_IGHD,
+  SE_0001629_IgG = rbind(data_heavy$data$SE_0001629_IGHG1, data_heavy$data$SE_0001629_IGHG2, data_heavy$data$SE_0001629_IGHG3, data_heavy$data$SE_0001629_IGHG4),
+  SE_0001629_IgM = data_heavy$data$SE_0001629_IGHM,
+  SE_0001630_IgA = rbind(data_heavy$data$SE_0001630_IGHA1, data_heavy$data$SE_0001630_IGHA2),
+  SE_0001630_IgD = data_heavy$data$SE_0001630_IGHD,
+  SE_0001630_IgG = rbind(data_heavy$data$SE_0001630_IGHG1, data_heavy$data$SE_0001630_IGHG2, data_heavy$data$SE_0001630_IGHG3, data_heavy$data$SE_0001630_IGHG4),
+  SE_0001630_IgM = data_heavy$data$SE_0001630_IGHM
+)
+
+# Sort the df by descending number of clones
+data_heavy_2$data <- map(data_heavy_2$data, function(x) arrange(x, desc(Clones)))
+
+# Match the donor ID to experiment ID
+sample_mappings <- read_delim("bulk_vh_10x/sample_mappings.yml", delim = ":", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
+colnames(sample_mappings) <- c("Experiment_Id", "Donor_Id")
+
+# Format the metadata
+data_heavy_2$meta <- data_frame(Sample = names(data_heavy_2$data),
+                                Isotype = str_split(names(data_heavy_2$data), "_", 
+                                                         simplify = T)[,3],
+                                Experiment_Id = str_sub(names(data_heavy_2$data), end = -5L),
+                                Chain = ifelse(str_detect(names(data_heavy_2$data),
+                                                               "IgA|IgD|IgE|IgG|IgM"),"heavy", "light"),
+                                Method = "bulk")
+data_heavy_2$meta <- merge(data_heavy_2$meta, sample_mappings)
+data_heavy_2$meta <- data_heavy_2$meta[,c("Sample", "Experiment_Id", "Donor_Id", "Isotype", "Chain", "Method")]
+
+
+# Do the same for light chain samples
+data_light <- repLoad("./bulk_vl_10x/1.5_Alchemab_cgene/")
+
+for (i in 1:length(data_light$data)){
+  data_light$data[[i]]$C.name <- str_split(names(data_light$data[i]), "_", simplify = T)[,3]
+  data_light$data[[i]]$FR4.aa <- bunch_translate(data_light$data[[i]]$FR4.nt)
+  data_light$data[[i]]$Sequence.aa <- paste0(data_light$data[[i]]$FR1.aa, data_light$data[[i]]$CDR1.aa,    data_light$data[[i]]$FR2.aa, data_light$data[[i]]$CDR2.aa, data_light$data[[i]]$FR3.aa,        data_light$data[[i]]$CDR3.aa, data_light$data[[i]]$FR4.aa)
+}
+
+data_light_2 <- data_light
+data_light_2$data <- list(
+  SE_0002454_IgK = data_light$data$SE_0002454_IGKC,
+  SE_0002455_IgK = data_light$data$SE_0002455_IGKC,
+  SE_0002456_IgK = data_light$data$SE_0002456_IGKC,
+  SE_0002457_IgK = data_light$data$SE_0002457_IGKC,
+  SE_0002458_IgK = data_light$data$SE_0002458_IGKC,
+  SE_0002459_IgK = data_light$data$SE_0002459_IGKC,
+  SE_0002460_IgK = data_light$data$SE_0002460_IGKC,
+  SE_0002461_IgK = data_light$data$SE_0002461_IGKC,
+  SE_0002462_IgK = data_light$data$SE_0002462_IGKC,
+  SE_0002463_IgK = data_light$data$SE_0002463_IGKC,
+  SE_0002464_IgL = rbind(data_light$data$SE_0002464_IGLC1, data_light$data$SE_0002464_IGLC2, data_light$data$SE_0002464_IGLC3, data_light$data$SE_0002464_IGLC5, data_light$data$SE_0002464_IGLC6),
+  SE_0002465_IgL = rbind(data_light$data$SE_0002465_IGLC1, data_light$data$SE_0002465_IGLC2, data_light$data$SE_0002465_IGLC3, data_light$data$SE_0002465_IGLC5, data_light$data$SE_0002465_IGLC6),
+  SE_0002466_IgL = rbind(data_light$data$SE_0002466_IGLC1, data_light$data$SE_0002466_IGLC2, data_light$data$SE_0002466_IGLC3, data_light$data$SE_0002466_IGLC5, data_light$data$SE_0002466_IGLC6),
+  SE_0002467_IgL = rbind(data_light$data$SE_0002467_IGLC1, data_light$data$SE_0002467_IGLC2, data_light$data$SE_0002467_IGLC3, data_light$data$SE_0002467_IGLC5, data_light$data$SE_0002467_IGLC6),
+  SE_0002468_IgL = rbind(data_light$data$SE_0002468_IGLC1, data_light$data$SE_0002468_IGLC2, data_light$data$SE_0002468_IGLC3, data_light$data$SE_0002468_IGLC5, data_light$data$SE_0002468_IGLC6),
+  SE_0002469_IgL = rbind(data_light$data$SE_0002469_IGLC1, data_light$data$SE_0002469_IGLC2, data_light$data$SE_0002469_IGLC3, data_light$data$SE_0002469_IGLC5, data_light$data$SE_0002469_IGLC6),
+  SE_0002470_IgL = rbind(data_light$data$SE_0002470_IGLC1, data_light$data$SE_0002470_IGLC2, data_light$data$SE_0002470_IGLC3, data_light$data$SE_0002470_IGLC5, data_light$data$SE_0002470_IGLC6),
+  SE_0002471_IgL = rbind(data_light$data$SE_0002471_IGLC1, data_light$data$SE_0002471_IGLC2, data_light$data$SE_0002471_IGLC3, data_light$data$SE_0002471_IGLC5, data_light$data$SE_0002471_IGLC6),
+  SE_0002472_IgL = rbind(data_light$data$SE_0002472_IGLC1, data_light$data$SE_0002472_IGLC2, data_light$data$SE_0002472_IGLC3, data_light$data$SE_0002472_IGLC5, data_light$data$SE_0002472_IGLC6),
+  SE_0002473_IgL = rbind(data_light$data$SE_0002473_IGLC1, data_light$data$SE_0002473_IGLC2, data_light$data$SE_0002473_IGLC3, data_light$data$SE_0002473_IGLC5, data_light$data$SE_0002473_IGLC6)
+)
+  
+data_light_2$data <- map(data_light_2$data, function(x) arrange(x, desc(Clones)))
+
+# Match the donor ID to experiment ID
+sample_mappings_2 <- read_delim("bulk_vl_10x/sample_mappings.yml", delim = ":", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
+colnames(sample_mappings_2) <- c("Experiment_Id", "Donor_Id")
+
+# Format the metadata
+data_light_2$meta <- data_frame(Sample = names(data_light_2$data),
+                                Isotype = str_split(names(data_light_2$data), "_", 
+                                                         simplify = T)[,3],
+                                Experiment_Id = str_sub(names(data_light_2$data), end = -5L),
+                                Chain = ifelse(str_detect(names(data_light_2$data),
+                                                               "IgA|IgD|IgE|IgG|IgM"),"heavy", "light"),
+                                Method = "bulk")
+data_light_2$meta <- merge(data_light_2$meta, sample_mappings_2)
+data_light_2$meta <- data_light_2$meta[,c("Sample", "Experiment_Id", "Donor_Id", "Isotype", "Chain", "Method")]
+
+data_all_isotypes <- list(data = append(data_heavy_2$data, data_light_2$data),
+                          meta = rbind(data_heavy_2$meta, data_light_2$meta))
+
+# Change the sample name to donor name
+data_all_isotypes$meta$File_name <- data_all_isotypes$meta$Sample
+data_all_isotypes$meta$Sample <- paste(data_all_isotypes$meta$Donor_Id, data_all_isotypes$meta$Isotype, data_all_isotypes$meta$Method, sep = "_")
+names(data_all_isotypes$data) <- data_all_isotypes$meta$Sample
+
+# Sort the list by donor name
+data_all_isotypes$data <- data_all_isotypes$data[order(names(data_all_isotypes$data))]
+data_all_isotypes$meta <- arrange(data_all_isotypes$meta, Sample)
+
+# Recalculate the clonal proportion
+for (i in 1:length(data_all_isotypes$data)){
+  data_all_isotypes$data[[i]]$Proportion <- data_all_isotypes$data[[i]]$Clones/sum(data_all_isotypes$data[[i]]$Clones)}
+
+
+saveRDS(data_all_isotypes, "data_bulk_isotypes")
+```

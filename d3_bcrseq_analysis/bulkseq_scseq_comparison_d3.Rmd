@@ -1,0 +1,588 @@
+---
+title: "Bulkseq_scseq_comparison_d3"
+author: "Khang"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: 
+    keep_tex: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE)
+knitr::opts_chunk$set(dev = "pdf",
+                      dpi = 600, out.width = "100%", out.height = "100%",
+                      cache = TRUE)
+```
+
+```{r libs, include=FALSE}
+library(immunarch)
+library(tidyverse)
+library(pheatmap)
+library(ggplotify)
+library(cowplot)
+library(reshape2)
+library(seqinr)
+library(RColorBrewer)
+library(cluster)
+library(rstatix)
+library(ggpubr)
+library(scales)
+library(vegan)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Load the data
+data_d3_bulk <- readRDS("./data_d3_bulk.RDS")
+data_d3_sc <- readRDS("./data_d3_scseq.RDS")
+
+# Rename the samples
+names(data_d3_bulk$data) <- paste0(names(data_d3_bulk$data),"_bulk")
+names(data_d3_sc$data) <- str_replace_all(names(data_d3_sc$data),"clonotypes_heavy","sc")
+
+# Merge the bulk and sc data into one object
+data_d3_both <- list(data = c(data_d3_bulk$data, data_d3_sc$data),
+                      meta = rbind(data_d3_bulk$meta, data_d3_sc$meta))
+
+# Format the metadata
+data_d3_both$meta <- tibble(Sample = names(data_d3_both$data),
+                                Donor_Id = str_split(names(data_d3_both$data), "_",simplify = T,)[,1],
+                                Subset = str_split(names(data_d3_both$data), "_",simplify = T,)[,2],
+                                Method = str_split(names(data_d3_both$data), "_",simplify = T,)[,3],
+                                Chain = "hc")
+                                
+# Save the data
+saveRDS(data_d3_both, "./data_d3_both.RDS")
+```
+
+```{r}
+# Load the data
+data_d3_both <- readRDS("./data_d3_both.RDS")
+
+#Replace the method sc with single-cell and names of B-cell subset in the metadata
+data_d3_both$meta$Method <- str_replace_all(data_d3_both$meta$Method, "sc", "single-cell")
+data_d3_both$meta$Subset <- str_replace_all(data_d3_both$meta$Subset, "all", "Unsorted")
+data_d3_both$meta$Subset <- str_replace_all(data_d3_both$meta$Subset, "mem", "Bmem")
+data_d3_both$meta$Subset <- str_replace_all(data_d3_both$meta$Subset, "naive", "Naive")
+data_d3_both$meta$Subset <- str_replace_all(data_d3_both$meta$Subset, "pb", "PB")
+
+# Replace the names of the samples in the data
+names(data_d3_both$data) <- str_replace_all(names(data_d3_both$data), "all", "All")
+names(data_d3_both$data) <- str_replace_all(names(data_d3_both$data), "mem", "Bmem")
+names(data_d3_both$data) <- str_replace_all(names(data_d3_both$data), "naive", "Naive")
+names(data_d3_both$data) <- str_replace_all(names(data_d3_both$data), "pb", "PB")
+
+data_d3_both$meta$Sample <- names(data_d3_both$data)
+
+
+# Change the subset variable into a factor with order from naive to pb 
+data_d3_both$meta$Subset <- factor(data_d3_both$meta$Subset, ordered = T, levels = c("Unsorted", "Naive","GC","Bmem","PB"))
+```
+
+```{r}
+# Create an annotation df for coloring
+# Create a separate df with rownames matching the sample names
+ann_df <- data.frame(Donor_Id = data_d3_both$meta$Donor_Id,
+                     Subset = data_d3_both$meta$Subset,
+                     Method = data_d3_both$meta$Method)
+rownames(ann_df) <- names(data_d3_both$data)
+
+# Specify colors for the annotation
+ann_color <- list(Donor_Id = brewer.pal(6,"Set3"),
+                  Subset = c("#2894BF","#395896","#41868e","#7caf67","#824f7e"),
+                  Method = c("#404040","#bababa"))
+
+names(ann_color$Donor_Id) <- unique(data_d3_both$meta$Donor_Id)
+names(ann_color$Subset) <- unique(data_d3_both$meta$Subset)
+names(ann_color$Method) <- unique(data_d3_both$meta$Method)
+```
+
+# CDRH3 count
+```{r}
+cdr3_count <- tibble(Sample = names(data_d3_both$data),
+                     Volume = unlist(map(data_d3_both$data, function(x) length(unique(x$CDR3.aa)))))
+cdr3_count <- merge(cdr3_count, data_d3_both$meta)
+# Reorder the factors by B-cell subset
+cdr3_count <- cdr3_count %>% arrange(factor(Subset, levels = c("Unsorted", "Naive","GC","Bmem","PB"))) %>% mutate(Sample = factor(Sample, levels = Sample))
+```
+
+```{r fig.height=4, fig.width=13}
+p_cdr3_count_bulk <- ggplot(data = cdr3_count %>% filter(Method == "bulk"), aes(x = Sample, y = Volume, fill = Subset)) +
+  geom_col() +
+  scale_fill_manual(values = c("#2894BF","#7caf67","#41868e", "#395896","#824f7e")) +
+  geom_text(aes(label = comma(Volume)), size = 2, vjust = -0.2) +
+  scale_y_continuous(labels = comma) +
+  theme_half_open() +
+  theme(axis.text.x = element_text(angle = 90, size = 7.5), legend.position = "none") +
+  labs(x = "Sample", y = "Unique CDRH3 count", fill = "Cell subset")
+
+p_cdr3_count_sc <- ggplot(data = cdr3_count %>% filter(Method == "single-cell"), aes(x = Sample, y = Volume, fill = Subset)) +
+  geom_col() +
+  scale_fill_manual(values = c("#2894BF","#395896")) +
+  geom_text(aes(label = comma(Volume)), size = 2, vjust = -0.2) +
+  scale_y_continuous(labels = comma) +
+  theme_half_open() +
+  theme(axis.text.x = element_text(angle = 90, size = 7.5), legend.position = "none") +
+  labs(x = "Sample", y = "Unique CDRH3 count", fill = "Cell subset")
+
+p_cdr3_count <- plot_grid(p_cdr3_count_bulk, p_cdr3_count_sc, rel_widths = c(2,1))
+p_cdr3_count
+
+#ggsave("./figures/cdrh3_count_d3.pdf", p_cdr3_count, width = 13, height = 4, dpi = 600)
+#ggsave("./figures/cdrh3_count_d3.png", p_cdr3_count, width = 13, height = 4, dpi = 600)
+```
+
+# Evenness profile
+```{r}
+# Calculate the Hill numbers
+hill_all <- lapply(data_d3_both$data, function (x) renyi(x$Proportion, scales = seq(0, 10, by = 0.2), hill = TRUE) %>% as_tibble(.,rownames = "alpha"))
+
+# Convert diversity into Evenness
+evenness_all <- sapply(hill_all, function (x) x$value <- x$value/x$value[[1]])
+evenness_all <- as_tibble(evenness_all)
+
+# Reshape the data from wide to long format
+evenness_all_long <- gather(evenness_all, key = "Sample", value = "Value")
+Alpha <- seq(0, 10, by = 0.2)
+evenness_all_long <- cbind(evenness_all_long, Alpha)
+evenness_all_long <- merge(evenness_all_long, data_d3_both$meta)
+```
+
+```{r fig.height=3.5, fig.width=7}
+p_evenness <- ggplot(evenness_all_long, aes(x = Alpha, y = Value, group = Sample)) +
+  geom_line(aes(color = Subset), linewidth = 0.5) +
+  scale_color_manual(values = c("#2894BF","#7caf67","#41868e", "#395896","#824f7e")) +
+  theme_half_open() +
+  theme(panel.grid.major = element_line(color = "gray80", size = 0.2, linetype = 1), legend.position = "right", strip.background = element_blank()) + 
+  labs(x = "Alpha", y = "Repertoire evenness", color = "Cell subset") +
+  scale_x_continuous(breaks = seq(0, 10, by = 1)) + #change the break of the tick marks
+  scale_y_continuous(breaks = seq(0.0, 1.0, by = 0.1)) +
+  facet_wrap(vars(Method))
+
+p_evenness
+
+#ggsave("./figures/evenness_d3.pdf", p_evenness, width = 7, height = 3.5, dpi = 600)
+#ggsave("./figures/evenness_d3.png", p_evenness, width = 7, height = 3.5, dpi = 600)
+```
+
+# VH gene usage
+```{r VH-gene_usage, message=FALSE, warning=FALSE}
+# V gene usage heavy chain (don't weigh by clone size)
+gene_use_hv <- geneUsage(data_d3_both$data, .gene = c("hs.ighv"), .ambig = "maj", .norm = TRUE, .quant = NA)
+gene_use_hv[is.na(gene_use_hv)] <- 0
+
+gene_use_hv_bulk <- geneUsage(data_d3_both$data[str_which(data_d3_both$meta$Method, "bulk")], .gene = c("hs.ighv"), .ambig = "maj", .norm = TRUE, .quant = NA)
+gene_use_hv_bulk[is.na(gene_use_hv_bulk)] <- 0
+
+gene_use_hv_sc <- geneUsage(data_d3_both$data[str_which(data_d3_both$meta$Method, "single-cell")], .gene = c("hs.ighv"), .ambig = "maj", .norm = TRUE, .quant = NA)
+gene_use_hv_sc[is.na(gene_use_hv_sc)] <- 0
+```
+
+```{r}
+# Calculate mean and sd of VH-gene usage
+mean_gene_use_hv_bulk <- tibble(Names = gene_use_hv_bulk$Names,
+                                Mean = apply(gene_use_hv_bulk[,-1], 1, mean),
+                                Sd = apply(gene_use_hv_bulk[,-1], 1, sd))
+
+mean_gene_use_hv_sc <- tibble(Names = gene_use_hv_sc$Names,
+                                Mean = apply(gene_use_hv_sc[,-1], 1, mean),
+                                Sd = apply(gene_use_hv_sc[,-1], 1, sd))
+```
+
+```{r fig.height=5, fig.width=18}
+p_mean_gene_use_hv_bulk <- ggplot(data = mean_gene_use_hv_bulk, aes(x = reorder(Names, Mean, decreasing = T), y = Mean)) +
+  geom_col(fill = "#E07A6C") +
+  geom_errorbar(aes(ymin = Mean - Sd, ymax = Mean + Sd), width = 0.4, alpha = 0.8) +
+  scale_y_continuous(breaks = seq(0, 0.15, by = 0.05)) +
+  theme_half_open() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(x = "V-gene name", y = "V-gene frequency")
+
+p_mean_gene_use_hv_sc <- ggplot(data = mean_gene_use_hv_sc, aes(x = reorder(Names, Mean, decreasing = T), y = Mean)) +
+  geom_col(fill = "#E07A6C") +
+  geom_errorbar(aes(ymin = Mean - Sd, ymax = Mean + Sd), width = 0.4, alpha = 0.8) +
+  scale_y_continuous(breaks = seq(0, 0.15, by = 0.05)) +
+  theme_half_open() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(x = "V-gene name", y = "V-gene frequency")
+
+p_mean_gene_use_hv <- plot_grid(p_mean_gene_use_hv_bulk, p_mean_gene_use_hv_sc)
+p_mean_gene_use_hv
+
+#ggsave("./figures/gene_use_hv_d3.pdf", p_mean_gene_use_hv, width = 18, height = 5, dpi = 600)
+#ggsave("./figures/gene_use_hv_d3.png", p_mean_gene_use_hv, width = 18, height = 5, dpi = 600)
+```
+
+# Display all VH-gene usage as faceted barplots
+```{r}
+# Transform the V gene usage matrix into long format
+gene_use_hv_long <- column_to_rownames(gene_use_hv, var = "Names")
+gene_use_hv_long <- pivot_longer(as_tibble(gene_use_hv_long), cols = everything(), cols_vary = "slowest", names_to = "Sample", values_to = "Frequency")
+gene_use_hv_long$Gene <- rep(gene_use_hv$Names, times = ncol(gene_use_hv)-1)
+gene_use_hv_long <- merge(gene_use_hv_long, data_d3_both$meta)
+
+# Calculate mean and sd of VH-gene usage
+#group by gene, subset, method, calculate the mean and sd for the frequency of each VH gene into a summary tibble
+
+gene_use_hv_long_summary <- gene_use_hv_long %>% group_by(Method, Subset, Gene) %>% summarise(Mean_freq = mean(Frequency), Sd_freq = sd(Frequency))
+
+# Count the number of genes present in each facet
+gene_use_hv_long_summary %>% group_by(Method, Subset) %>% summarise(Gene_count = sum(Mean_freq > 0))
+
+```
+
+```{r fig.height=6, fig.width=14}
+p_gene_use_hv_facet <- ggplot(data = gene_use_hv_long_summary, aes(x = Gene, y = Mean_freq)) +
+  geom_col(aes(fill = Subset)) +
+  scale_fill_manual(values = c("#2894BF","#7caf67","#41868e", "#395896","#824f7e")) +
+  geom_errorbar(aes(ymin = Mean_freq - Sd_freq, ymax = Mean_freq + Sd_freq), width = 0.3, alpha = 0.5) +
+  geom_text(aes(label = round(Mean_freq, 2)), vjust = -0.2, size = 1) +
+  scale_y_continuous(breaks = seq(0, 0.15, by = 0.05)) +
+  theme_half_open() +
+  theme(axis.text.x = element_text(angle = 90, size = 7), strip.background = element_blank(), text = element_text(size = 20), strip.text.y = element_text(size = 15)) +
+  facet_grid(rows = vars(Subset), cols = vars(Method)) +
+  labs(x = "V-gene name", y = "V-gene frequency", fill = str_wrap("Cell subset"))
+
+p_gene_use_hv_facet
+
+#ggsave("./figures/gene_use_hv_facet_d3.pdf", p_gene_use_hv_facet, width = 14, height = 6, dpi = 600)
+```
+
+# VH gene usage correlation
+
+```{r VH-gene_usage_correlation_isotype, fig.height=16, fig.width=16}
+# Calculate pairwise correlation metrics and JSD
+vh_cor_pearson <- geneUsageAnalysis(gene_use_hv, .method = "cor", .cor = "pearson", .verbose = F)
+
+# Calculate the distance based on correlation values
+dist_pearson <- as.dist(1-cor(gene_use_hv[,-1], method = "pearson", use = "na.or.complete"))
+hc_pearson <- hclust(dist_pearson, method = "ward.D2")
+```
+
+
+```{r VH-gene_usage_correlation_isotype, fig.height=14, fig.width=14}
+# Draw the cor plot (remember to make silhouette plot to justify cluster number)
+p_cor_pearson <- as.ggplot(pheatmap(vh_cor_pearson, cluster_rows = T, cluster_cols = T, na_col = "gray80", silent = T, clustering_method = "ward.D2",
+                     clustering_distance_rows = dist_pearson, clustering_distance_cols = dist_pearson,
+                     border_color = NA, angle_col = 90,
+                     show_colnames = F, show_rownames = F, annotation_names_row = F,
+                     display_numbers = F, number_color = "black", fontsize = 12,
+                     annotation = ann_df, annotation_row = ann_df,
+                     annotation_colors = ann_color,
+                     cutree_rows = 6 , cutree_cols = 6,
+                     breaks = seq(round(min(vh_cor_pearson, na.rm = T),1), 1.0, by = 0.05),
+                     legend_breaks = seq(round(min(vh_cor_pearson, na.rm = T),1), 1.0, by = 0.05),
+                     legend_labels = c(seq(round(min(vh_cor_pearson, na.rm = T),1), 0.95, by = 0.05), "Cor"), # The breaks vector needs to be ONE element longer than the color vector
+                     color = colorRampPalette(c("#ffffb2", "#e31a1c"))(length(seq(round(min(vh_cor_pearson, na.rm = T),1), 1.0, by = 0.05))),
+                     ))
+p_cor_pearson
+
+#ggsave("./figures/VH_Pearson_cor_heatmap_d3.pdf", p_cor_pearson, width = 14, height = 14, dpi = 600)
+```
+
+```{r}
+# Visualize the pearson correlation of VH gene usage using box violin plots
+
+# Set the upper triangle to pairwise matrix to NA
+vh_cor_pearson2 <- vh_cor_pearson
+vh_cor_pearson2[upper.tri(vh_cor_pearson2)] <- NA
+
+# Convert matrix to long format
+vh_cor_pearson_long <- pivot_longer(as_tibble(vh_cor_pearson2), cols = everything(), names_to = "Target", values_to = "Cor")
+vh_cor_pearson_long$Sample <- rep(rownames(vh_cor_pearson2), each = ncol(vh_cor_pearson2))
+vh_cor_pearson_long <- merge(vh_cor_pearson_long, data_d3_both$meta)
+vh_cor_pearson_long$Donor_Id_Target <- str_split(vh_cor_pearson_long$Target, "_", simplify = T)[,1]
+vh_cor_pearson_long$Subset_Target <- str_split(vh_cor_pearson_long$Target, "_", simplify = T)[,2]
+vh_cor_pearson_long$Subset_Target <- str_replace_all(vh_cor_pearson_long$Subset_Target, "All", "Unsorted")
+vh_cor_pearson_long$Method_Target <- str_split(vh_cor_pearson_long$Target, "_", simplify = T)[,3]
+vh_cor_pearson_long$Method_Target <- str_replace_all(vh_cor_pearson_long$Method_Target, "sc", "single-cell")
+
+# Set up groups to compare between same vs different donors, same vs different methods, and same vs different cell subsets
+vh_cor_pearson_long$Same_Donor <- ifelse(vh_cor_pearson_long$Donor_Id == vh_cor_pearson_long$Donor_Id_Target, "Same donor", "Different donors")
+vh_cor_pearson_long$Same_Subset <- ifelse(vh_cor_pearson_long$Subset == vh_cor_pearson_long$Subset_Target, "Same subset", "Different subsets")
+vh_cor_pearson_long$Same_Method <- ifelse(vh_cor_pearson_long$Method == vh_cor_pearson_long$Method_Target, "Same method", "Different methods")
+vh_cor_pearson_long$Pairwise_comparison <- paste(vh_cor_pearson_long$Same_Donor, vh_cor_pearson_long$Same_Method, sep = ";")
+
+
+# Remove duplicates and self-comparison by removing NA from the df
+vh_cor_pearson_long <- vh_cor_pearson_long %>% filter(!is.na(Cor))
+
+# Stat test for difference within a group (group by pwc)
+cor_kruskal <- vh_cor_pearson_long %>% kruskal_test(Cor~Pairwise_comparison)
+
+# Calculate the effect size (how much pwc group contribute to variation in cor)
+cor_kruskal_eff <- vh_cor_pearson_long %>% kruskal_effsize(Cor~Pairwise_comparison)
+cor_kruskal_eff
+
+# In the group with difference, calculate pairwise mean comparison with multiple testing correction
+cor_pwc <- vh_cor_pearson_long %>% wilcox_test(Cor~Pairwise_comparison, p.adjust.method = "bonferroni")
+
+# Auto add coordinates for plotting
+cor_pwc <- cor_pwc %>% add_xy_position(fun = "max", x = "Pairwise_comparison")
+
+cor_pwc_median <- vh_cor_pearson_long %>% group_by(Pairwise_comparison) %>% summarise(median = median(Cor))
+```
+
+# Compare the Pearson correlation of bvb, svs, and bvs within donors
+```{r}
+vh_cor_pearson_long$Pairwise_method <- paste(vh_cor_pearson_long$Method, vh_cor_pearson_long$Method_Target, sep = ";")
+
+# Stat test for difference within a group (group by pwc)
+cor_kruskal_method <- vh_cor_pearson_long %>% filter(Same_Donor == "Same donor") %>%  kruskal_test(Cor~Pairwise_method)
+
+# Calculate the effect size (how much pwc group contribute to variation in cor)
+cor_kruskal_method_eff <- vh_cor_pearson_long %>% filter(Same_Donor == "Same donor") %>% kruskal_effsize(Cor~Pairwise_method)
+cor_kruskal_method_eff
+
+# In the group with difference, calculate pairwise mean comparison with multiple testing correction
+cor_pwc_method <- vh_cor_pearson_long %>% filter(Same_Donor == "Same donor") %>% wilcox_test(Cor~Pairwise_method, p.adjust.method = "bonferroni")
+```
+```{r fig.height=5, fig.width=6}
+p_cor_pearson_box <- ggplot(data = vh_cor_pearson_long, aes(x = Pairwise_comparison, y = Cor)) +
+  geom_violin(fill = "#E07A6C") +
+  #scale_fill_brewer(type = "qual", palette = "Accent") +
+  geom_boxplot(fill = "#E07A6C", width = 0.1, color= "black") +
+  #scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_x_discrete(labels = c("Different donors;\nDifferent methods", "Different donors;\nSame method",
+                              "Same donor;\nDifferent methods", "Same donor;\nSame method")) +
+  scale_y_continuous(breaks = seq(0.3, 1.0, by = 0.1)) +
+  geom_text(data = cor_pwc_median, aes(x = Pairwise_comparison, y = 0.3, label = round(median,2))) +
+  #stat_compare_means(method = "kruskal.test", label.y = 1.3) +
+  annotate("text", x = 1.3, y = 1.3, label = paste0("Kruskal-Wallis, p = ",cor_kruskal$p)) + # Add exact p-value for KW test
+  stat_pvalue_manual(data = cor_pwc, label = "p.adj", label.size = 2.5, hide.ns = TRUE,  step.increase = 0.05) +
+  theme_half_open() +
+  theme(legend.position = "none", axis.text.x = element_text(size = 10)) + # Remove legend  
+  labs(x = "Pairwise comparison group", y = "VH-gene usage Pearson correlation")
+
+p_cor_pearson_box
+
+#ggsave("./figures/VH_Pearson_cor_d3.pdf", p_cor_pearson_box, width = 6, height = 5, dpi = 600)
+#ggsave("./figures/VH_Pearson_cor_d3.png", p_cor_pearson_box, width = 6, height = 5, dpi = 600)
+```
+
+# In bulkseq samples, examine the effect of cell subsets on Pearson correlation
+```{r}
+# Examine the effect of cell subsets on Pearson correlation
+# Filter for only comparison between bulkseq samples
+vh_cor_pearson_long_bulk <- vh_cor_pearson_long %>% filter(Method == "bulk" & Method_Target == "bulk")
+vh_cor_pearson_long_bulk$Pairwise_comparison <- paste(vh_cor_pearson_long_bulk$Same_Donor, vh_cor_pearson_long_bulk$Same_Subset, sep = ";")
+# Stat test for difference within a group (group by pwc)
+cor_kruskal2 <- vh_cor_pearson_long_bulk %>% kruskal_test(Cor~Pairwise_comparison)
+
+# Calculate the effect size (how much pwc group contribute to variation in cor)
+cor_kruskal_eff2 <- vh_cor_pearson_long_bulk %>% kruskal_effsize(Cor~Pairwise_comparison)
+cor_kruskal_eff2
+
+# In the group with difference, calculate pairwise mean comparison with multiple testing correction
+cor_pwc2 <- vh_cor_pearson_long_bulk %>% wilcox_test(Cor~Pairwise_comparison, p.adjust.method = "bonferroni")
+
+# Auto add coordinates for plotting
+cor_pwc2 <- cor_pwc2 %>% add_xy_position(fun = "max", x = "Pairwise_comparison")
+cor_pwc_median2 <- vh_cor_pearson_long_bulk %>% group_by(Pairwise_comparison) %>% summarise(median = median(Cor))
+```
+
+
+
+
+```{r fig.height=4.5, fig.width=4.5}
+p_cor_pearson_box2 <- ggplot(data = vh_cor_pearson_long_bulk, aes(x = Pairwise_comparison, y = Cor)) +
+  geom_violin(fill = "#E07A6C") +
+  #scale_fill_brewer(type = "qual", palette = "Set2") +
+  geom_boxplot(fill = "#E07A6C", width = 0.1, color= "black") +
+  #scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_x_discrete(labels = c("Different donors;\nDifferent subsets", "Different donors;\nSame subset",
+                              "Same donor;\nDifferent subsets")) +
+  scale_y_continuous(breaks = seq(0.3, 1.0, by = 0.1)) +
+  geom_text(data = cor_pwc_median2, aes(x = Pairwise_comparison, y = 0.45, label = round(median,2))) +
+  #stat_compare_means(method = "kruskal.test", label.y = 1.2) +
+  annotate("text", x = 1.3, y = 1.2, label = paste0("Kruskal-Wallis, p = ",cor_kruskal2$p)) + # Add exact p-value for KW test
+  stat_pvalue_manual(data = cor_pwc2, label = "p.adj", label.size = 2.5, hide.ns = F,  step.increase = 0.05) +
+  theme_half_open() +
+  theme(legend.position = "none", axis.text.x = element_text(size = 10)) + #Remove legend
+  labs(x = "Pairwise comparison group", y = "VH-gene usage Pearson correlation")
+
+p_cor_pearson_box2
+#ggsave("./figures/VH_Pearson_cor_subset_d3.pdf", p_cor_pearson_box2, width = 4.5, height = 4.5, dpi = 600)
+#ggsave("./figures/VH_Pearson_cor_subset_d3.png", p_cor_pearson_box2, width = 4.5, height = 4.5, dpi = 600)
+```
+
+
+
+\newpage
+# Repertoire overlap (shared CDRH3 sequence)
+
+```{r}
+cdrh3_overlap_jaccard <- (repOverlap(data_d3_both$data, .method = "jaccard",.col = "aa", .verbose = F))
+
+cdrh3_overlap_jaccard_bvs <- cdrh3_overlap_jaccard[str_which(colnames(cdrh3_overlap_jaccard), "sc"),str_which(rownames(cdrh3_overlap_jaccard), "bulk")]
+
+#cdrh3_overlap_morisita <- (repOverlap(data_d3_both$data, .method = "morisita", .col = "aa", .verbose = F))
+#saveRDS(cdrh3_overlap_morisita, "./cdrh3_overlap_morisita.RDS")
+#cdrh3_overlap_mh <- readRDS("./cdrh3_overlap_morisita.RDS")
+
+#cdrh3_overlap_mh_bvs <- cdrh3_overlap_mh[str_which(colnames(cdrh3_overlap_mh), "sc"),str_which(rownames(cdrh3_overlap_mh), "bulk")]
+```
+
+```{r Repertoire_overlap_isotype_jaccard, fig.height=14, fig.width=14}
+p_cdrh3_overlap_jaccard <- as.ggplot(
+  pheatmap(cdrh3_overlap_jaccard, cluster_rows = T, cluster_cols = T, clustering_method = "ward.D2",
+           cutree_rows = 7, cutree_cols = 7,
+           border_color = NA, #na_col =  "gray3",
+           show_colnames = F, show_rownames = F, annotation_names_row = F,
+           angle_col = 90, display_numbers = F, number_color = "black",
+           number_format = "%.2f", silent = T, fontsize_number = 10,
+           annotation = ann_df, annotation_row = ann_df,
+           annotation_colors = ann_color,
+           breaks = seq(round(min(cdrh3_overlap_jaccard, na.rm = T),1), 0.06, by = 0.005),
+           legend_breaks = seq(round(min(cdrh3_overlap_jaccard, na.rm = T),1), 0.06, by = 0.005),
+           legend_labels = c(seq(round(min(cdrh3_overlap_jaccard, na.rm = T),1), 0.055, by = 0.005), "Overlap"), # The breaks vector needs to be ONE element longer than the color vector
+           color = colorRampPalette(c("#ffffb2", "#e31a1c"))(12)
+           ))
+
+p_cdrh3_overlap_jaccard
+
+#ggsave("./figures/Repertoire_overlap_jaccard_d3.pdf", p_cdrh3_overlap_jaccard, width = 14, height = 14, dpi = 600)
+```
+
+```{r}
+# Tranform the Jaccard overlap matrix into long format
+
+# Set half pairwise matrix to NA (eliminate redundancy)
+cdrh3_overlap_jaccard2 <- cdrh3_overlap_jaccard
+cdrh3_overlap_jaccard2[lower.tri(cdrh3_overlap_jaccard2)] <- NA
+
+# Convert matrix to long format
+cdrh3_overlap_jaccard_long <- pivot_longer(as_tibble(cdrh3_overlap_jaccard2), cols = everything(), names_to = "Target", values_to = "Overlap")
+cdrh3_overlap_jaccard_long$Sample <- rep(colnames(cdrh3_overlap_jaccard2), each = nrow(cdrh3_overlap_jaccard2))
+cdrh3_overlap_jaccard_long <- merge(cdrh3_overlap_jaccard_long, data_d3_both$meta)
+cdrh3_overlap_jaccard_long$Donor_Id_Target <- str_split(cdrh3_overlap_jaccard_long$Target, "_", simplify = T)[,1]
+cdrh3_overlap_jaccard_long$Subset_Target <- str_split(cdrh3_overlap_jaccard_long$Target, "_", simplify = T)[,2]
+cdrh3_overlap_jaccard_long$Subset_Target <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Target, "All", "Unsorted")
+cdrh3_overlap_jaccard_long$Method_Target <- str_split(cdrh3_overlap_jaccard_long$Target, "_", simplify = T)[,3]
+cdrh3_overlap_jaccard_long$Method_Target <- str_replace_all(cdrh3_overlap_jaccard_long$Method_Target, "sc", "single-cell")
+
+# Filter out NA to remove self-comparisons
+cdrh3_overlap_jaccard_long <- cdrh3_overlap_jaccard_long %>% filter(!is.na(Overlap))
+
+# Set up groups to compare between bulk and scseq
+cdrh3_overlap_jaccard_long$Same_Subset <- ifelse(cdrh3_overlap_jaccard_long$Subset == cdrh3_overlap_jaccard_long$Subset_Target, "Same subset", "Different subsets")
+cdrh3_overlap_jaccard_long$Same_Method <- ifelse(cdrh3_overlap_jaccard_long$Method == cdrh3_overlap_jaccard_long$Method_Target, "Same method", "Different methods")
+cdrh3_overlap_jaccard_long$Same_Donor <- ifelse(cdrh3_overlap_jaccard_long$Donor_Id == cdrh3_overlap_jaccard_long$Donor_Id_Target, "Same donor", "Different donors")
+
+# Setup subset pairs for Jaccard comparison
+cdrh3_overlap_jaccard_long$Subset_Pair <- paste(cdrh3_overlap_jaccard_long$Subset, cdrh3_overlap_jaccard_long$Subset_Target, sep = ";")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "Bmem;Unsorted", "Unsorted;Bmem")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "GC;Unsorted", "Unsorted;GC")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "Naive;Unsorted", "Unsorted;Naive")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "PB;Unsorted", "Unsorted;PB")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "Bmem;Naive", "Naive;Bmem")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "GC;Naive", "Naive;GC")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "PB;Naive", "Naive;PB")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "Bmem;GC", "GC;Bmem")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "PB;GC", "GC;PB")
+cdrh3_overlap_jaccard_long$Subset_Pair <- str_replace_all(cdrh3_overlap_jaccard_long$Subset_Pair, "PB;Bmem", "Bmem;PB")
+```
+
+```{r eval=FALSE, include=FALSE}
+# Create another long format jaccard overlap table with duplicates for the subsets comparisons
+# Convert matrix to long format
+cdrh3_overlap_jaccard_long_dup <- pivot_longer(as_tibble(cdrh3_overlap_jaccard), cols = everything(), names_to = "Target", values_to = "Overlap")
+cdrh3_overlap_jaccard_long_dup$Sample <- rep(colnames(cdrh3_overlap_jaccard2), each = nrow(cdrh3_overlap_jaccard2))
+cdrh3_overlap_jaccard_long_dup <- merge(cdrh3_overlap_jaccard_long_dup, data_d3_both$meta)
+cdrh3_overlap_jaccard_long_dup$Donor_Id_Target <- str_split(cdrh3_overlap_jaccard_long_dup$Target, "_", simplify = T)[,1]
+cdrh3_overlap_jaccard_long_dup$Subset_Target <- str_split(cdrh3_overlap_jaccard_long_dup$Target, "_", simplify = T)[,2]
+cdrh3_overlap_jaccard_long_dup$Method_Target <- str_split(cdrh3_overlap_jaccard_long_dup$Target, "_", simplify = T)[,3]
+cdrh3_overlap_jaccard_long_dup$Method_Target <- str_replace_all(cdrh3_overlap_jaccard_long_dup$Method_Target, "sc", "single-cell")
+
+# Filter out NA to remove self-comparisons
+cdrh3_overlap_jaccard_long_dup <- cdrh3_overlap_jaccard_long_dup %>% filter(!is.na(Overlap))
+
+# Set up groups to compare between bulk and scseq
+cdrh3_overlap_jaccard_long_dup$Same_Subset <- ifelse(cdrh3_overlap_jaccard_long_dup$Subset == cdrh3_overlap_jaccard_long_dup$Subset_Target, "Same subset", "Different subsets")
+cdrh3_overlap_jaccard_long_dup$Same_Method <- ifelse(cdrh3_overlap_jaccard_long_dup$Method == cdrh3_overlap_jaccard_long_dup$Method_Target, "Same method", "Different methods")
+cdrh3_overlap_jaccard_long_dup$Same_Donor <- ifelse(cdrh3_overlap_jaccard_long_dup$Donor_Id == cdrh3_overlap_jaccard_long_dup$Donor_Id_Target, "Same donor", "Different donors")
+```
+
+
+# Compare overlap within donors and across donors
+```{r}
+# Stat test for difference within a group (group by pwc)
+overlap_kruskal_donor <- cdrh3_overlap_jaccard_long %>% kruskal_test(Overlap~Same_Donor)
+
+# Calculate the effect size (how much pwc group contribute to variation in cor)
+overlap_kruskal_donor_eff <- cdrh3_overlap_jaccard_long %>% kruskal_effsize(Overlap~Same_Donor)
+overlap_kruskal_donor_eff
+
+# In the group with difference, calculate pairwise mean comparison with multiple testing correction
+overlap_pwc_donor <- cdrh3_overlap_jaccard_long %>% wilcox_test(Overlap~Same_Donor, p.adjust.method = "bonferroni")
+
+# Auto add coordinates for plotting
+overlap_pwc_donor <- overlap_pwc_donor %>% add_xy_position(fun = "max", x = "Same_Donor")
+overlap_pwc_donor$y.position <- 4e+00
+
+overlap_pwc_donor_median <- cdrh3_overlap_jaccard_long %>% group_by(Same_Donor) %>% summarise(median = median(Overlap))
+```
+
+```{r fig.height=4, fig.width=4}
+p_overlap_donor <- ggplot(data = cdrh3_overlap_jaccard_long, aes(x = Same_Donor, y = Overlap)) +
+  geom_violin(fill = "#E07A6C") +
+  scale_y_continuous(trans=scales::pseudo_log_trans(base = 10, sigma = 1e-05),
+                     breaks = c(0, 1e-05, 1e-04, 1e-03, 1e-02, 1e-01)) +
+  #scale_y_log10(breaks = c(1e-05, 1e-04, 1e-03, 1e-02, 1e-01, 1e+00)) +
+  scale_fill_brewer(type = "qual", palette = "Set2", direction = -1) +
+  geom_boxplot(fill = "#E07A6C", width = 0.05, color= "black") +
+  geom_text(data = overlap_pwc_donor_median, aes(x = Same_Donor, y = -1e-05, label = round(median,5))) +
+  #stat_compare_means(method = "kruskal.test", label.y = 1.2) +
+  stat_pvalue_manual(data = overlap_pwc_donor, label = "p", label.size = 2.5, hide.ns = F,  step.increase = 0.05) +
+  theme_half_open() +
+  #theme(axis.text.x = element_blank()) + #Remove x-axis text
+  theme(legend.position = "none") +
+  labs(x = "Donor ID", y = "CDRH3 Jaccard overlap", fill = "Pairwise comparison groups")
+
+p_overlap_donor
+#ggsave("./figures/Jaccard_overlap_donor_d3.pdf", p_overlap_donor, width = 4, height = 4, dpi = 600)
+#ggsave("./figures/Jaccard_overlap_donor_d3.png", p_overlap_donor, width = 4, height = 4, dpi = 600)
+```
+
+# Jaccard overlap across cell subsets in the same donor 
+```{r}
+# Filter the CDRH3 comparison to same donor different subsets for bulkseq only
+cdrh3_overlap_jaccard_long_sdds <-  cdrh3_overlap_jaccard_long %>% filter(Same_Subset == "Different subsets" & Same_Donor == "Same donor" & Method == "bulk" & Method_Target == "bulk")
+
+# Stat test for difference within a group (group by pwc)
+overlap_kruskal_sdds <- cdrh3_overlap_jaccard_long_sdds %>% kruskal_test(Overlap~Subset_Pair)
+
+# Calculate the effect size (how much pwc group contribute to variation in overlap)
+overlap_kruskal_sdds_eff <- cdrh3_overlap_jaccard_long_sdds %>% kruskal_effsize(Overlap~Subset_Pair)
+overlap_kruskal_sdds_eff
+
+# In the group with difference, calculate pairwise mean comparison with multiple testing correction
+overlap_pwc_sdds <- cdrh3_overlap_jaccard_long_sdds %>% wilcox_test(Overlap~Subset_Pair, p.adjust.method = "bonferroni")
+
+# Auto add coordinates for plotting
+overlap_pwc_sdds <- overlap_pwc_sdds %>% add_y_position(fun = "max")
+overlap_pwc_sdds$y.position <- overlap_pwc_sdds$y.position + 3 # manually change the y-position of the brackets
+
+overlap_pwc_sdds_median <- cdrh3_overlap_jaccard_long_sdds %>% group_by(Subset_Pair) %>% summarise(median = median(Overlap))
+
+overlap_pwc_sdds_median <- overlap_pwc_sdds_median %>% arrange(desc(median))
+```
+
+```{r fig.height=4, fig.width=10}
+p_overlap_sdds <- ggplot(data = cdrh3_overlap_jaccard_long_sdds, aes(x = factor(Subset_Pair, levels = overlap_pwc_sdds_median$Subset_Pair), y = Overlap)) +
+  geom_violin(fill = "#E07A6C") +
+  scale_y_continuous(trans=scales::pseudo_log_trans(base = 10, sigma = 1e-04),
+                     breaks = c(0, 1e-04, 1e-03, 1e-02, 1e-01)) +
+  #scale_fill_manual(values = c("#2894BF","#7caf67","#395896","#41868e","#824f7e")) +
+  geom_boxplot(fill = "#E07A6C", width = 0.1, color= "black") +
+  geom_text(data = overlap_pwc_sdds_median, aes(x = Subset_Pair, y = -1e-05, label = round(median,4))) +
+  stat_compare_means(method = "kruskal.test", label.y = 3) +
+  stat_pvalue_manual(data = overlap_pwc_sdds, label = "p.adj", label.size = 2.5, hide.ns = T, step.increase = 0.05) +
+  theme_half_open() +
+  theme(legend.position = "none", axis.text.x = element_text(size = 9)) +
+  labs(x = "B-cell subset", y = "Same donor CDRH3 Jaccard overlap", fill = "Subset")
+
+p_overlap_sdds
+#ggsave("./figures/Jaccard_overlap_sdds_d3.pdf", p_overlap_sdds, width = 10, height = 4, dpi = 600)
+#ggsave("./figures/Jaccard_overlap_sdds_d3.png", p_overlap_sdds, width = 10, height = 4, dpi = 600)
+```
+

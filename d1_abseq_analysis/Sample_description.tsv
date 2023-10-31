@@ -1,0 +1,17 @@
+filename	sample	enzyme	ab_input_ug	isotype
+EH3396	1	Tryp	40	IgG
+EH3397	2	Ct	40	IgG
+EH3398	3	Ct+Tryp	40	IgG
+EH3399	4	AspN	40	IgG
+EH3400	5	Tryp	1.2	IgA
+EH3401	6	Ct	1.2	IgA
+EH3402	7	Ct+Tryp	1.2	IgA
+EH3403	8	AspN	1.2	IgA
+EH3404	9	Tryp	1	IgM
+EH3405	10	Ct	1	IgM
+EH3406	11	Ct+Tryp	1	IgM
+EH3407	12	AspN	1	IgM
+EH3408	13	Tryp	10	IgK
+EH3409	14	Ct	10	IgK
+EH3410	15	Ct+Tryp	10	IgK
+EH3411	16	AspN	10	IgK

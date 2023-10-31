@@ -1,0 +1,166 @@
+---
+title: "Scseq_lc_coherence_d2"
+author: "Khang"
+date: "r Sys.Date()"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE)
+library(immunarch)
+library(tidyverse)
+library(RColorBrewer)
+library(cowplot)
+library(seqinr)
+library(pheatmap)
+library(ggplotify)
+```
+
+# Load the filtered paired HC-LC contigs
+```{r load_data, eval=FALSE, include=FALSE}
+files_contigs <- list.files("./2_Ig_all_filtered_contigs/", full.names = T)
+contigs_all <- map(.x = files_contigs, function (x) read_tsv(x))
+names(contigs_all) <- str_split(list.files("./2_Ig_all_filtered_contigs/"),"\\.", simplify = T)[,1]
+```
+
+```{r eval=FALSE, include=FALSE}
+# Group by cell barcode and chain, pair up VH-VL gene, CDRH3-CDRL3
+contigs_hc <- map(contigs_all, function(x) x %>% filter(chains == "IGH") %>% group_by(tagValueCELL) %>% 
+  summarise(VGeneHeavy = paste(bestVGene, collapse = ";"),
+            aaSeqCDRH3 = paste(aaSeqCDR3, collapse = ";"),
+            chains = unique(chains),
+            cloneId = unique(cloneId),
+            bestCGene = unique(bestCGene)))
+
+contigs_lc <- map(contigs_all, function(x) x %>% filter(chains != "IGH") %>% group_by(tagValueCELL) %>% 
+  summarise(VGeneLight = paste(bestVGene, collapse = ";"),
+            aaSeqCDRL3 = paste(aaSeqCDR3, collapse = ";"),
+            chains = unique(chains),
+            cloneId = unique(cloneId),
+            bestCGene = unique(bestCGene)))
+
+contigs_paired <- map2(contigs_hc, contigs_lc, function(x,y)
+  merge(x, y, by.x = "tagValueCELL", by.y = "tagValueCELL", suffixes = c("Heavy","Light")))
+
+# Consider paralogs to be the same gene (remove the D from the gene name to match paralogs)
+for (i in 1:length(contigs_paired)){
+  contigs_paired[[i]]$VGeneHeavy <- str_remove_all(contigs_paired[[i]]$VGeneHeavy, "D")
+  contigs_paired[[i]]$VGeneLIght <- str_remove_all(contigs_paired[[i]]$VGeneLight, "D")
+}
+
+saveRDS(contigs_paired, "./contigs_paired_d2.RDS")
+```
+
+```{r}
+contigs_paired <- readRDS("./contigs_paired_d2.RDS")
+names(contigs_paired) <- str_remove_all(names(contigs_paired), "_contigs")
+```
+
+# Function to compare two cells of different HC clonotypes, same VH gene, same CDRH3 aaSeq, returns TRUE/FALSE results of whether the VL gene are the same (private LC coherence)
+
+```{r echo=TRUE}
+lc_coherence_private <- function(df) {
+  df <- df %>% group_by(VGeneHeavy, aaSeqCDRH3) %>% filter(n() > 1) # keep cells having VGene Heavy and CDRh3aa with n > 1
+  n_cells_evaluated <- nrow(df)
+  coherent_pairs <- df %>% group_by(VGeneHeavy, aaSeqCDRH3, VGeneLight)  %>% # If VL are different the group will split
+    filter(n() > 1) %>% # Only consider when > 1 cell inside the group
+    summarise(n_coherent = sum(outer(cloneIdHeavy, cloneIdHeavy, FUN = "!="))/2) # make sure the cell pairs came from different heavy clonotype
+  n_coherent_pairs_different_cloneIdHeavy <- sum(coherent_pairs$n_coherent)
+  
+  all_pairs <- df %>% summarise(n_all = sum(outer(cloneIdHeavy, cloneIdHeavy, FUN = "!="))/2)
+  n_all_pairs_different_cloneIdHeavy <- sum(all_pairs$n_all)
+
+  res <- tibble(n_coherent_pairs = n_coherent_pairs_different_cloneIdHeavy,
+                n_all_pairs = n_all_pairs_different_cloneIdHeavy,
+                n_evaluated_cells = n_cells_evaluated,
+                coherent_percent = replace_na((n_coherent_pairs_different_cloneIdHeavy/n_all_pairs_different_cloneIdHeavy)*100, 0),
+                )
+  return(res)
+}
+```
+
+# Calculate overlap of VL gene between cells PAIRS having: same VH gene, same CDRH3 aaSeq, diff HC clonotypes, same donor (private BCR)
+```{r warning=FALSE}
+lc_coherence_private_df <- tibble()
+for (i in 1:length(contigs_paired)){
+  lc_coherence_private_df <- rbind(lc_coherence_private_df, lc_coherence_private(contigs_paired[[i]]))
+}
+lc_coherence_private_df$Sample <- names(contigs_paired)
+lc_coherence_private_df$n_rep_pairs <- unlist(map(contigs_paired, function(x) nrow(x)*(nrow(x) - 1)/2))
+lc_coherence_private_df$rep_percent <- (lc_coherence_private_df$n_coherent_pairs/lc_coherence_private_df$n_rep_pairs)*100
+```
+
+```{r fig.height=4, fig.width=7}
+p_private_coherence <- ggplot(lc_coherence_private_df, aes(x = Sample, y = coherent_percent)) +
+  geom_col(fill = "#88C790", width = 0.8) +
+  geom_text(aes(label = round(coherent_percent, 2)), vjust = -0.2) +
+  geom_text(x = 3, y = 3, label = "NA", check_overlap = T) + # Manually add the NA value to the plot 
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, by = 20)) +
+  theme_cowplot() +
+  theme(axis.text.x = element_text(angle = 0, size = 7, vjust = -0.05)) +
+  labs(x = "Donor", y = "Light chain coherence (%)")
+
+p_private_coherence
+
+#ggsave("./figures/private_coherence_d2.pdf", p_private_coherence, width = 7, height = 4, dpi = 600)
+```
+
+# Function to compare two cells of different donors, same VH gene, same CDRH3 aaSeq, returns TRUE/FALSE results of whether the VL gene are the same (public LC coherence)
+```{r echo=TRUE}
+lc_coherence_public <- function(airr_pair, airr_list) {
+  df1 <- airr_list[[airr_pair[1]]]
+  df2 <- airr_list[[airr_pair[2]]]
+  
+  df1$airr_name <- airr_pair[1]
+  df2$airr_name <- airr_pair[2]
+  df <- rbind(df1, df2)
+  
+  coherent_pairs <- df %>% group_by(VGeneHeavy, aaSeqCDRH3, VGeneLight)  %>% 
+    filter(n() > 1) %>%
+    summarise(n_coherent = sum(outer(airr_name, airr_name, FUN = "!="))/2)
+  n_coherent_pairs_different_airr <- sum(coherent_pairs$n_coherent)
+  
+  all_pairs <- df %>% group_by(VGeneHeavy, aaSeqCDRH3)  %>% 
+    filter(n() > 1) %>%
+    summarise(n_pairs = sum(outer(airr_name, airr_name, FUN = "!="))/2)
+  n_all_pairs_different_airr <- sum(all_pairs$n_pairs)
+  #n_all_pairs_different_airr <- nrow(df1) * nrow(df2) # WRONG
+  
+  coherent_percent <- (n_coherent_pairs_different_airr / n_all_pairs_different_airr)*100
+  
+  return(coherent_percent)
+}  
+
+calculate_public_coherence_matrix <- function(airr_list) {
+  unique_airr_pairs <- combn(names(airr_list), 2) # Create a combination matrix of every 2 repertoire in a list
+  lc_coherence <- apply(unique_airr_pairs, MARGIN = 2, lc_coherence_public, airr_list = airr_list) # For every pair of rep (column wise in the matrix), calculate the public coherence number (also provide the list of repertoire)
+  
+  res <- data.frame(airr1 = unique_airr_pairs[1, ], 
+                    airr2 = unique_airr_pairs[2, ], 
+                    lc_coherence = lc_coherence)
+  res <- reshape(res, idvar = "airr1", timevar = "airr2", direction = "wide")
+  colnames(res) <- str_remove(colnames(res), pattern = "lc_coherence.")
+  colnames(res)[1] <- ""
+  return(res)
+}
+```
+
+
+```{r}
+lc_coherence_public_mat <- calculate_public_coherence_matrix(contigs_paired)
+rownames(lc_coherence_public_mat) <- lc_coherence_public_mat[,1]
+lc_coherence_public_mat <- lc_coherence_public_mat[,-1]
+lc_coherence_public_mat <- data.matrix(lc_coherence_public_mat)
+```
+
+
+```{r fig.height=6, fig.width=6}
+p_public_coherence <- as.ggplot(pheatmap(lc_coherence_public_mat, cluster_rows = F, cluster_cols = F, 
+                                         na_col = NA, border_color = "grey60", angle_col = 90,
+                                         display_numbers = T, number_color = "white", number_format = "%.0f", fontsize_number = 12,
+                                         color = hcl.colors(50, "Oslo")[20:45],
+                                         breaks = seq(0,100, by = 4),legend_breaks = seq(0,100, by = 20)))
+#p_public_coherence
+
+#ggsave("./figures/public_coherence_d2.pdf", p_public_coherence, width = 6, height = 6, dpi = 600)
+```

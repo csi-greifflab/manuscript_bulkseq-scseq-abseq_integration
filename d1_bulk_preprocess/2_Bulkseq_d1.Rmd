@@ -1,0 +1,45 @@
+---
+title: "BulkSeq_d1"
+author: "Khang"
+date: "r Sys.Date()"
+output: 
+  pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE)
+```
+
+```{r libs, include=FALSE}
+library(immunarch)
+library(tidyverse)
+library(seqinr)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Load the filtered data
+data_all <- repLoad("./2_Ig_all_filtered/", .coding = F)
+
+# Load the data from the source mixcr files
+path <- list.files("./2_Ig_all_filtered/", full.names = T)
+Ig_all_filtered <- lapply(path, function (x) read_tsv(x))
+names(Ig_all_filtered) <- str_split(list.files("./2_Ig_all_filtered//"), "\\.", simplify = T)[,1]
+
+# Replace the clonal count in immunarch with the unique UMI count in mixcr, gene name without score, and imputed VDJ seq (for future cloning)
+for (i in 1:length(data_all$data)){
+  data_all$data[[i]]$Clones <- Ig_all_filtered[[i]]$uniqueUMICount
+  data_all$data[[i]]$V.name <- Ig_all_filtered[[i]]$bestVGene
+  data_all$data[[i]]$D.name <- Ig_all_filtered[[i]]$bestDGene
+  data_all$data[[i]]$J.name <- Ig_all_filtered[[i]]$bestJGene
+  data_all$data[[i]]$C.name <- Ig_all_filtered[[i]]$bestCGene
+  data_all$data[[i]]$Sequence.aa.imputed <- Ig_all_filtered[[i]]$aaSeqImputedVDJRegion
+}
+
+# Rename the isotype to be more concise, recalculate the clonal proportion, get the full-length aa sequence
+for (i in 1:length(data_all$data)){
+  data_all$data[[i]]$Proportion <- data_all$data[[i]]$Clones/sum(data_all$data[[i]]$Clones)
+  data_all$data[[i]]$Sequence.aa <- map_chr(data_all$data[[i]]$Sequence, function(x) c2s(translate(s2c(x))))
+}
+
+saveRDS(data_all, "data_d1_bulkseq.RDS")
+```

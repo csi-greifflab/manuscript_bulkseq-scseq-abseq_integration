@@ -1,0 +1,645 @@
+---
+title: "Ab-seq"
+author: "Khang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE)
+
+library(tidyverse)
+library(reshape2)
+library(seqinr)
+library(ggExtra)
+library(ggside)
+library(ggalluvial)
+library(stringdist)
+
+# Source the functions for preprocessing
+#source("/Users/khangl/Dropbox (UiO)/CSI/datasets/csi_datasets/ms_benchmarking/MS_preprocessing.R")
+#source("D:/Dropbox (UiO)/CSI/datasets/csi_datasets/ms_benchmarking/MS_preprocessing.R")
+```
+
+```{r include=FALSE}
+# Read the files
+MQ_peptides_ct_hc <- read_tsv("./MQ_output/HC/peptides_Chymotrypsin.txt")
+MQ_peptides_tryp_hc <- read_tsv("./MQ_output/HC/peptides_Trypsin.txt")
+MQ_peptides_both_hc <- read_tsv("./MQ_output/HC/peptides_Both.txt")
+MQ_peptides_aspn_hc <- read_tsv("./MQ_output/HC/peptides_AspN.txt")
+
+MQ_peptides_ct_lc <- read_tsv("./MQ_output/LC/peptides_Chymotrypsin.txt")
+MQ_peptides_tryp_lc <- read_tsv("./MQ_output/LC/peptides_Trypsin.txt")
+MQ_peptides_both_lc <- read_tsv("./MQ_output/LC/peptides_Both.txt")
+MQ_peptides_aspn_lc <- read_tsv("./MQ_output/LC/peptides_AspN.txt")
+
+# Add enzyme name to each file
+MQ_peptides_ct_hc$Enzyme <- "Ct"
+MQ_peptides_ct_lc$Enzyme <- "Ct"
+MQ_peptides_tryp_hc$Enzyme <- "Tryp"
+MQ_peptides_tryp_lc$Enzyme <- "Tryp"
+MQ_peptides_both_hc$Enzyme <- "Ct+Tryp"
+MQ_peptides_both_lc$Enzyme <- "Ct+Tryp"
+MQ_peptides_aspn_hc$Enzyme <- "AspN"
+MQ_peptides_aspn_lc$Enzyme <- "AspN"
+
+# Read the sample mapping file
+sample_description <- read_tsv("./Sample_description.tsv")
+colnames(sample_description) <- c("Rawfilenumber", "Sample", "Enzyme","Ab_input_ug", "Isotype")
+```
+
+```{r}
+# Function to preprocess MQ peptides.txt output
+preprocess_MQ <- function(df) {
+  df <- df[, c("Sequence", "Proteins", "Enzyme",
+               colnames(df)[grepl("Intensity ", colnames(df), fixed = TRUE)])] # Select only relevant columns
+  df <- melt(df, id = c("Sequence", "Proteins", "Enzyme")) # Transform to long format
+  colnames(df) <- c("Sequence", "Proteins", "Enzyme", "Rawfilenumber", "Intensity")
+  df$Rawfilenumber <- str_remove(df$Rawfilenumber, "Intensity ") # format the filename
+  df <- df[df$Intensity > 0, ] # Filter only peptides that are detected
+  df <- merge(df, sample_description, by = c("Rawfilenumber","Enzyme"), all.x = T) # add metadata
+  df <- df[-str_which(df$Proteins, "CON__"),] # Remove peptides mapping to contaminants
+  df <- na.omit(df, cols = "Proteins") # Remove peptides that don't have a reference match
+
+  return(df) }
+```
+
+# Transform and preprocess the MQ output, add metadata
+```{r}
+df_list <- mget(ls(pattern = "^MQ_peptides")) # load all MQ output into a list
+df_list_2 <- map(df_list, function(x) preprocess_MQ(x)) # preprocess
+
+# Merge the HC and LC by removing from the LC pepides that are also in HC (will not matter since we only want unique peptides hits)
+df_list_2$MQ_peptides_aspn_lc <- df_list_2$MQ_peptides_aspn_lc %>% filter(Sequence %in% setdiff(df_list_2$MQ_peptides_aspn_lc$Sequence, df_list_2$MQ_peptides_aspn_hc$Sequence))
+df_list_2$MQ_peptides_both_lc <- df_list_2$MQ_peptides_both_lc %>% filter(Sequence %in% setdiff(df_list_2$MQ_peptides_both_lc$Sequence, df_list_2$MQ_peptides_both_hc$Sequence))
+df_list_2$MQ_peptides_ct_lc <- df_list_2$MQ_peptides_ct_lc %>% filter(Sequence %in% setdiff(df_list_2$MQ_peptides_ct_lc$Sequence, df_list_2$MQ_peptides_ct_hc$Sequence))
+df_list_2$MQ_peptides_tryp_lc <- df_list_2$MQ_peptides_tryp_lc %>% filter(Sequence %in% setdiff(df_list_2$MQ_peptides_tryp_lc$Sequence, df_list_2$MQ_peptides_tryp_hc$Sequence))
+
+# Merge all files into 1 df
+df_MQ <- tibble()
+for (i in (1:length(df_list_2))){
+  df_MQ <- rbind(df_MQ, df_list_2[[i]])
+}
+
+# remove old objects from memory
+rm(list = ls(pattern = "^MQ_peptides"))
+rm(df_list, df_list_2)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Transform the MQ output to long format
+df_MQ_ct <- MQ_peptides_ct[, c("Sequence", "Proteins", "Enzyme",
+                       colnames(MQ_peptides_ct)[grepl("Intensity ", colnames(MQ_peptides_ct), fixed = TRUE)])]
+df_MQ_ct <- melt(df_MQ_ct, id=c("Sequence", "Proteins", "Enzyme"))
+colnames(df_MQ_ct) <- c("Sequence", "Proteins", "Enzyme", "Rawfilenumber", "Intensity")
+df_MQ_ct$Rawfilenumber <- str_remove(df_MQ_ct$Rawfilenumber, "Intensity ")
+df_MQ_ct <- df_MQ_ct[df_MQ_ct$Intensity > 0, ]
+df_MQ_ct <- merge(df_MQ_ct, sample_description, by = c("Rawfilenumber","Enzyme"), all.x = T)
+
+df_MQ_tryp <- MQ_peptides_tryp[, c("Sequence", "Proteins", "Enzyme",
+                       colnames(MQ_peptides_tryp)[grepl("Intensity ", colnames(MQ_peptides_tryp), fixed = TRUE)])]
+df_MQ_tryp <- melt(df_MQ_tryp, id=c("Sequence", "Proteins", "Enzyme"))
+colnames(df_MQ_tryp) <- c("Sequence", "Proteins", "Enzyme", "Rawfilenumber", "Intensity")
+df_MQ_tryp$Rawfilenumber <- str_remove(df_MQ_tryp$Rawfilenumber, "Intensity ")
+df_MQ_tryp <- df_MQ_tryp[df_MQ_tryp$Intensity > 0, ]
+df_MQ_tryp <- merge(df_MQ_tryp, sample_description, by = c("Rawfilenumber","Enzyme"), all.x = T)
+
+df_MQ_both <- MQ_peptides_both[, c("Sequence", "Proteins", "Enzyme",
+                       colnames(MQ_peptides_both)[grepl("Intensity ", colnames(MQ_peptides_both), fixed = TRUE)])]
+df_MQ_both <- melt(df_MQ_both, id=c("Sequence", "Proteins", "Enzyme"))
+colnames(df_MQ_both) <- c("Sequence", "Proteins", "Enzyme", "Rawfilenumber", "Intensity")
+df_MQ_both$Rawfilenumber <- str_remove(df_MQ_both$Rawfilenumber, "Intensity ")
+df_MQ_both <- df_MQ_both[df_MQ_both$Intensity > 0, ]
+df_MQ_both <- merge(df_MQ_both, sample_description, by = c("Rawfilenumber","Enzyme"), all.x = T)
+
+df_MQ_aspn <- MQ_peptides_aspn[, c("Sequence", "Proteins", "Enzyme",
+                       colnames(MQ_peptides_aspn)[grepl("Intensity ", colnames(MQ_peptides_aspn), fixed = TRUE)])]
+df_MQ_aspn <- melt(df_MQ_aspn, id=c("Sequence", "Proteins", "Enzyme"))
+colnames(df_MQ_aspn) <- c("Sequence", "Proteins", "Enzyme", "Rawfilenumber", "Intensity")
+df_MQ_aspn$Rawfilenumber <- str_remove(df_MQ_aspn$Rawfilenumber, "Intensity ")
+df_MQ_aspn <- df_MQ_aspn[df_MQ_aspn$Intensity > 0, ]
+df_MQ_aspn <- merge(df_MQ_aspn, sample_description, by = c("Rawfilenumber","Enzyme"), all.x = T)
+
+# bind the dfs from all different enzymes together
+df_MQ <- rbind(df_MQ_tryp, df_MQ_ct, df_MQ_both, df_MQ_aspn)
+
+# If a peptide has any hits to a decoy (CON__) then remove, also remove all peptides with blank proteins
+df_MQ <- df_MQ[-str_which(df_MQ$Proteins, "CON__"),]
+df_MQ <- na.omit(df_MQ, cols = "Proteins")
+```
+
+```{r}
+# The number of all peptides identified by MQ
+n_peptides_all <- length(df_MQ$Sequence)
+```
+
+```{r}
+# Retain only peptides that mapped to the BCR references (have "Sample" in the Proteins column)
+df_MQ2 <- df_MQ[str_detect(df_MQ$Proteins, "Sample_"),]
+
+# Replace all the "." with "_" to separate cloneID
+df_MQ2$Proteins <- str_replace_all(df_MQ2$Proteins, "\\.","_")
+```
+
+
+```{r}
+# Function to get the method of the database
+get_method <- function(x) {
+  method_vector <- vector(mode = "character", length = length(x))
+  hits <- str_split(x,";") #split the different hits
+  for (i in 1:length(x))
+    components <- lapply(hits[i], function(y) str_split(y,"_")) # break into components
+    method <- sapply(components[[1]], function(z) z[4]) #take only the method information
+    method_filter <- method[grep("bulk|sc",method)]
+    method_filter <- paste(unique(method_filter), collapse = ";") #paste together the different isotypes if any
+    method_vector[i] <- method_filter
+  return(method_vector) 
+}
+```
+
+```{r}
+# Create a vector of sequencing method for the hits
+peptides_method <- unlist(lapply(df_MQ2$Proteins, get_method))
+# Get the method column into the df
+df_MQ2 <- mutate(df_MQ2, Method = peptides_method)
+# Tag the peptides that matches both methods as both
+df_MQ2$Method <- str_replace_all(df_MQ2$Method,"bulk;sc|sc;bulk","both")
+
+n_peptides_ab_bulk <- df_MQ2 %>% filter(Method == "bulk") %>% nrow()
+n_peptides_ab_sc <- df_MQ2 %>% filter(Method == "sc") %>% nrow()
+n_peptides_ab_both <- df_MQ2 %>% filter(Method == "both") %>% nrow()
+```
+
+```{r}
+# Read the reference dataframe
+df_ref <- read_tsv(file = "./df_ref.tsv")
+```
+
+```{r eval=FALSE, include=FALSE}
+# List out how many reference hits each peptide has
+ref_hits <- map(.x = df_MQ2$Proteins, function (x) unlist(str_split(x,";")))
+
+# Create a shortened ref list for each peptide that has only the corresponding hits
+ref_each <- map(.x = ref_hits, function(x) filter(df_ref, Clonotype %in% x))
+
+# Find the position where the peptide matches
+res_seq <- map2(.x = ref_each, .y = df_MQ2$Sequence, function (x,y)
+                 str_locate(x$VDJ_seq, y))
+res_cdr3 <- map(.x = ref_each, function (x)
+                 str_locate(x$VDJ_seq, x$CDR3_seq))
+
+# Check the overlap between the peptides and the cdr3 region of the ref clonotype
+
+overlap <- map2(.x = res_seq, .y= res_cdr3, function (x,y) 
+                mapply(max, (mapply(min, x[,2], y[,2]) - mapply(max, x[,1], y[,1])) + 1, 0))
+overlap <- lapply(overlap, function(x) x[!is.na(x)])
+
+# CDR3 overlap length distribution
+# How many peptides overlap with how many residues
+# Collapse the cdr3 overlap length 
+overlap_length <- sapply(overlap, function(x) min(unique(x)))
+
+# Add the overlap length info into the df
+df_MQ2$CDR3_overlap_length <- overlap_length
+
+# List out the frequency of overlap length
+overlap_length <- table(unlist(overlap_length))
+overlap_length <- tibble(frequency = as.numeric(overlap_length),cdr3_overlap_length = as.numeric(names(overlap_length)))
+
+# Count the number of ref hits for each peptide
+number_of_hits <- sapply(overlap, length)
+df_MQ2$Clone_hits <- number_of_hits
+
+# Remove one errorneous peptides (with Inf CDR3 overlap)
+df_MQ2 <- df_MQ2[-str_which(df_MQ2$CDR3_overlap_length, "Inf"),]
+
+# Filter for CDR3 peptides
+df_cdr3 <- df_MQ2 %>% filter(CDR3_overlap_length >=3)
+
+# List out peptide length
+df_cdr3$Sequence_length <- nchar(df_cdr3$Sequence)
+
+# Save the processed df_cdr3 as R object
+saveRDS(df_cdr3, "./df_cdr3.RDS")
+```
+
+```{r}
+df_cdr3 <- readRDS("./df_cdr3.RDS")
+# Number of cdr3 peptides (overlap with cdr3 >= 3 aa)
+n_peptides_cdr3_bulk <- df_cdr3 %>% filter(Method == "bulk") %>% nrow()
+n_peptides_cdr3_sc <- df_cdr3 %>% filter(Method == "sc") %>% nrow()
+n_peptides_cdr3_both <- df_cdr3 %>% filter(Method == "both") %>% nrow()
+
+df_cdr3$Method <- factor(df_cdr3$Method, levels = c("bulk", "sc", "both"))
+
+# Separate the peptides hit by reference chain
+df_cdr3$Ref_chain <- ""
+df_cdr3$Ref_chain[str_which(df_cdr3$Proteins, "IgA|IgG|IgD|IgM")] <- "Heavy chain"
+df_cdr3$Ref_chain[str_which(df_cdr3$Proteins, "IgK|IgL")] <- "Light chain"
+```
+
+# Line plot to display number of MQ peptides, Ab peptides, CDR3 peptides
+```{r}
+df_n_peptides <- tibble(type = factor(c("All", "Ab", "Ab", "Ab", "CDR3", "CDR3", "CDR3"), levels = c("All", "Ab", "CDR3")),
+                        reference = factor(c("all references", "bulkBCR-seq", "scBCR-seq", "bulk & scBCR-seq","bulkBCR-seq", "scBCR-seq", "bulk & scBCR-seq"), levels = c("all references", "bulkBCR-seq", "scBCR-seq", "bulk & scBCR-seq")),
+                        count = c(n_peptides_all,
+                                  n_peptides_ab_bulk, n_peptides_ab_sc, n_peptides_ab_both,
+                                  n_peptides_cdr3_bulk, n_peptides_cdr3_sc, n_peptides_cdr3_both))
+```
+
+
+```{r eval=FALSE, fig.height=4, fig.width=4, include=FALSE}
+p_peptide_type <- ggplot(data = df_n_peptides, aes(x = type, y = count, group = 1)) +
+  geom_line(linewidth = 1, color = "#588DE0") +
+  geom_point(size = 3.5, color = "#588DE0") +
+  scale_x_discrete(labels = c("All", "Ab-specific", "CDR3-overlapping")) +
+  geom_text(aes(label = count), vjust = -0.2, hjust = -0.2) +
+  theme_classic() +
+  labs(x = "Peptide type", y = "Peptide count")
+
+p_peptide_type
+
+#ggsave("./figures/peptide_type.pdf", p_peptide_type, height = 4, width = 4, dpi = 600)
+```
+
+```{r fig.height=4, fig.width=4}
+p_peptide_type <- ggplot(data = df_n_peptides, aes(x = type, y = count, fill = reference)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("#edd9ba", "#4597EA", "#EB2852", "#841CC5")) +
+  geom_text(aes(label = count), position = position_dodge(width = 0.85), vjust = -0.2, size = 3) +
+  labs(y = "Peptide count", x = "Peptide type", fill = "Reference") +
+  theme_classic() +
+  theme(legend.position = "bottom", legend.margin = margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5)) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+p_peptide_type
+
+#ggsave("./figures/peptide_type.pdf", p_peptide_type, height = 4, width = 4, dpi = 600)
+```
+
+# Color pallette
+```{r}
+#enzyme_cols <- c("AspN" = "#B4C540", "Ct" = "#64C5EB", "Ct+Tryp" = "#7F58AF", "Tryp" = "#E84D8A")
+
+method_cols <- c("bulk" = "#4597EA", "sc" = "#EB2852", "both" = "#841CC5")
+```
+
+# Barplot of sequencing method
+```{r fig.height=4, fig.width=4}
+p_method <- ggplot(data = df_cdr3, aes(factor(Method, levels = c("bulk", "sc", "both")))) +
+  geom_histogram(stat = "count", aes(fill = Method), width = 0.8) +
+  scale_fill_manual(values = method_cols) +
+  stat_count(aes(label = ..count..), geom = "text", vjust = -0.2) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  labs(x = "Sequencing method", y = "CDR3 peptide count") +
+  scale_x_discrete(labels = c("bulkBCR-seq", "scBCR-seq", "both")) +
+  scale_y_continuous(limits = c(0, 420)) +
+  facet_grid(rows = vars(Ref_chain))
+
+p_method
+
+#ggsave("./figures/method.pdf", p_method, height = 4, width = 4, dpi = 600)
+```
+
+# Bar plot of CDR3 peptide count for each enzyme
+```{r fig.height=4, fig.width=4}
+p_enzyme <- ggplot(data = df_cdr3, aes(Enzyme)) +
+  geom_histogram(aes(fill = Method), stat = "count", position = "dodge", width = 0.8) +
+  scale_fill_manual(values = method_cols) +
+  stat_count(aes(label = ..count.., fill = Method), geom = "text", position = position_dodge(width = 0.75), vjust = -0.2) +
+  theme_classic() +
+  theme(legend.key.size = unit(0.5, 'cm'),
+        legend.margin = margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.box.spacing = unit(10, "pt")) +
+  scale_y_continuous(limits = c(0, 220)) +
+  labs(x = "Protease treatment", y = " CDR3 peptide count") +
+  facet_grid(rows = vars(Ref_chain))
+
+p_enzyme
+
+#ggsave("./figures/enzyme.pdf", p_enzyme, height = 4, width = 4, dpi = 600)
+```
+
+# Scatterplot between peptide length and cdr3 overlap length
+```{r fig.height=4, fig.width=4}
+p_peptide_length <- ggplot(data = df_cdr3, aes(x = CDR3_overlap_length, y = Sequence_length)) +
+  geom_point(aes(color = Method)) +
+  geom_xsidedensity(aes(color = Method, fill = Method), alpha = 0.2) +
+  geom_ysidedensity(aes(color = Method, fill = Method), alpha = 0.2) +
+  scale_color_manual(values = method_cols) +
+  scale_fill_manual(values = method_cols) +
+  scale_y_continuous(breaks = c(7, seq(5, 40, by = 5))) +
+  scale_x_continuous(breaks = seq(3, 18, by = 3)) +
+  theme_classic() +
+  theme(legend.key.size = unit(0.5, 'cm'),
+        legend.margin = margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.box.spacing = unit(5, "pt"),
+        legend.position = "bottom",
+        ggside.panel.scale = .25) +
+  labs(x = "CDR3 overlap length", y = "Peptide length")
+
+#p_peptide_length_margin <- ggMarginal(p_peptide_length, type = "density", fill = "grey60")
+
+#p_peptide_length_margin
+p_peptide_length
+#ggsave("./figures/peptide_length.pdf", p_peptide_length, height = 4, width = 4, dpi = 600)
+```
+
+# Barplot of CDR3 peptide count vs number of unique CDR3 match
+```{r}
+df_cdr3$Clone_hits_type <- ""
+df_cdr3$Clone_hits_type[which(df_cdr3$Clone_hits == 1)] <- "only 1"
+df_cdr3$Clone_hits_type[which(df_cdr3$Clone_hits > 1)] <- "more than 1"
+df_cdr3$Clone_hits_type <- factor(df_cdr3$Clone_hits_type, levels = c("only 1", "more than 1"))
+```
+
+```{r fig.height=4, fig.width=4}
+p_unique_cdr3 <- ggplot(df_cdr3, aes(Clone_hits_type)) +
+  geom_histogram(aes(fill = Method), stat = "count", position = "dodge", width = 0.8) +
+  scale_fill_manual(values = method_cols) +
+  stat_count(aes(label = ..count.., fill = Method), geom = "text", position = position_dodge(width = 0.75), vjust = -0.2) +
+  theme_classic() +
+  theme(legend.key.size = unit(0.5, 'cm'),
+        legend.margin = margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.box.spacing = unit(10, "pt")) +
+  scale_y_continuous(limits = c(0, 220)) +
+  labs(x = "Number of clonotypes mapped to peptide", y = "CDR3 peptide count") +
+  facet_grid(rows = vars(Ref_chain))
+  
+
+p_unique_cdr3
+
+#ggsave("./figures/unique_cdr3.pdf", p_unique_cdr3, height = 4, width = 4, dpi = 600)
+```
+
+# Histogram of clonotype rank (divide into bins) vs peptide count
+```{r}
+# Filter for only unique clone hits
+df_cdr3_unique <- df_cdr3 %>% filter(Clone_hits == 1)
+
+# Remove the false igor hit
+df_cdr3_unique$Proteins <- str_remove_all(df_cdr3_unique$Proteins, "igor_igh_4379;")
+
+# Extract the rank of the ref clonotype
+df_cdr3_unique$Clone_rank <- as.numeric(str_split(df_cdr3_unique$Proteins, "_", simplify = T)[,5])
+
+# Extract the sample origin of the ref clonotype
+df_cdr3_unique$BCR_sample <- str_extract(df_cdr3_unique$Proteins, "Sample_[:digit:]{1}_[:alpha:]{3}_[:alpha:]{2,4}")
+
+# Extract the BCR isotype of the ref clonotype
+df_cdr3_unique$BCR_isotype <- str_split(df_cdr3_unique$Proteins, "_", simplify = T)[,3]
+```
+
+```{r fig.height=5, fig.width=13}
+p_clone_rank <- ggplot(data = df_cdr3_unique, aes(log10(Clone_rank))) +
+  geom_histogram(aes(fill = Method), stat = "bin", color = "black", bins = 50) +
+  scale_fill_manual(values = method_cols) +
+  scale_y_continuous(breaks = seq(0, 24, by = 3)) +
+  scale_x_log10(breaks = seq(1, 6, by = 0.5)) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  labs(x = "log10 clonotype rank", y = "CDR3 peptide count") +
+  facet_grid(cols = vars(Method), rows = vars(Ref_chain))
+
+p_clone_rank
+
+#ggsave("./figures/clone_rank.pdf", p_clone_rank, height = 5, width = 13, dpi = 600)
+```
+
+# Load up the mixcr clonotypes for bulkseq and contigs for scseq, find a peptide with high cdr3 overlap, and extract clonal info to a table
+```{r eval=FALSE, include=FALSE}
+# Read the processed MiXCR sequences
+path_bulk <- list.files("../../sequencing/20210921_bulkseq/Analysis/20210921_bulkseq_mixcr_v4100/2_Ig_all_filtered", full.names = T)
+data_bulk <- map(path_bulk, function(x) read_tsv(x))
+# exclude the bulk IgE samples
+data_bulk <- data_bulk[-3]
+names(data_bulk) <- c("Sample_0_IgA_bulk", "Sample_0_IgD_bulk", "Sample_0_IgG_bulk", "Sample_0_IgK_bulk", "Sample_0_IgL_bulk", "Sample_0_IgM_bulk")
+
+path_sc <- list.files("../../sequencing/20210714_scseq/Analysis/20210714_scseq_mixcr_v4100_merged/6_Ig_all_clonotypes_isotypes_single/", full.names = T)
+names_sc <- str_remove_all(list.files("../../sequencing/20210714_scseq/Analysis/20210714_scseq_mixcr_v4100_merged/6_Ig_all_clonotypes_isotypes_single/", full.names = F), ".txt")
+data_sc <- map(path_sc, function(x) read_tsv(x))
+names(data_sc) <- names_sc
+```
+
+```{r eval=FALSE, include=FALSE}
+# Choose a candidate for bulkseq hits HC and LC
+unique_peptide_bulk_hc <- df_cdr3_unique %>% filter(Sequence == "YCSGGSCFSFGDAFEMWGQGTR")
+ref_bulk_hc <- data_bulk$Sample_0_IgA_bulk %>% filter(cloneId == "20129") %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqVDJRegion)
+table_peptide_bulk_hc <- merge(x = unique_peptide_bulk_hc, y = ref_bulk_hc, by.x = "Clone_rank", by.y = "cloneId")
+table_peptide_bulk_hc <- table_peptide_bulk_hc %>% select(Enzyme, Sequence, aaSeqCDR3, aaSeqVDJRegion, bestVGene, bestJGene)
+colnames(table_peptide_bulk_hc) <- c("Protease", "Peptide sequence", "CDR3 sequence", "VDJ sequence", "V gene", "J gene")
+
+unique_peptide_bulk_lc <- df_cdr3_unique %>% filter(Sequence == "YCQQSHDTPITF")
+ref_bulk_lc <- data_bulk$Sample_0_IgK_bulk %>% filter(cloneId == "11142") %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqVDJRegion)
+table_peptide_bulk_lc <- merge(x = unique_peptide_bulk_lc, y = ref_bulk_lc, by.x = "Clone_rank", by.y = "cloneId")
+table_peptide_bulk_lc <- table_peptide_bulk_lc %>% select(Enzyme, Sequence, aaSeqCDR3, aaSeqVDJRegion, bestVGene, bestJGene)
+colnames(table_peptide_bulk_lc) <- c("Protease", "Peptide sequence", "CDR3 sequence", "VDJ sequence", "V gene", "J gene")
+
+#write_tsv(table_peptide_bulk_hc, "./table_peptide_bulk_hc.tsv")
+#write_tsv(table_peptide_bulk_lc, "./table_peptide_bulk_lc.tsv")
+
+# Choose a candidate for scseq hits HC and LC with the other paired chain
+unique_peptide_sc_hc <- df_cdr3_unique %>% filter(Sequence == "DTAVYYCARAPDFESGPS")
+ref_sc_hc <- data_sc$Sample_3_IgM_sc %>% filter(cloneId == "7651") %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqVDJRegion, tagValueCELL)
+table_peptide_sc_hc <- merge(x = unique_peptide_sc_hc, y = ref_sc_hc, by.x = "Clone_rank", by.y = "cloneId")
+table_peptide_sc_hc <- table_peptide_sc_hc %>% select(Enzyme, Sequence, aaSeqCDR3, aaSeqVDJRegion, tagValueCELL, bestVGene, bestJGene)
+colnames(table_peptide_sc_hc) <- c("Protease", "Peptide sequence", "CDR3 sequence", "VDJ sequence", "Cell barcode", "V gene", "J gene")
+
+ref_sc_hc_pair <- data_sc$Sample_3_IgK_sc %>% filter(tagValueCELL == "GCTGCTTGTGGTACAG") %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqVDJRegion, tagValueCELL)
+table_pair_sc_hc <- ref_sc_hc_pair %>% select(aaSeqCDR3, aaSeqVDJRegion, tagValueCELL, bestVGene, bestJGene)
+colnames(table_pair_sc_hc) <- c("CDR3 sequence", "VDJ sequence", "Cell barcode", "V gene", "J gene")
+
+unique_peptide_sc_lc <- df_cdr3_unique %>% filter(Sequence == "SEDEADYYCAVWDDR")
+ref_sc_lc <- data_sc$Sample_5_IgL_sc %>% filter(cloneId == "2591") %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqVDJRegion, tagValueCELL)
+table_peptide_sc_lc <- merge(x = unique_peptide_sc_lc, y = ref_sc_lc, by.x = "Clone_rank", by.y = "cloneId")
+table_peptide_sc_lc <- table_peptide_sc_lc %>% select(Enzyme, Sequence, aaSeqCDR3, aaSeqVDJRegion, tagValueCELL, bestVGene, bestJGene)
+colnames(table_peptide_sc_lc) <- c("Protease", "Peptide sequence", "CDR3 sequence", "VDJ sequence", "Cell barcode", "V gene", "J gene")
+
+ref_sc_lc_pair <- data_sc$Sample_5_IgG_sc %>% filter(tagValueCELL == "ACGTCAAGTACAGACG") %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqVDJRegion, tagValueCELL)
+table_pair_sc_lc <- ref_sc_lc_pair %>% select(aaSeqCDR3, aaSeqVDJRegion, tagValueCELL, bestVGene, bestJGene)
+colnames(table_pair_sc_lc) <- c("CDR3 sequence", "VDJ sequence", "Cell barcode", "V gene", "J gene")
+
+#write_tsv(table_peptide_sc_hc, "./table_peptide_sc_hc.tsv")
+#write_tsv(table_pair_sc_hc, "./table_pair_sc_hc.tsv")
+
+#write_tsv(table_peptide_sc_lc, "./table_peptide_sc_lc.tsv")
+#write_tsv(table_pair_sc_lc, "./table_pair_sc_lc.tsv")
+```
+# Recover all VDJ sequences for bulkBCR-seq peptides
+```{r}
+# Read the processed MiXCR sequences
+path_bulk_hc <- list.files("./d1_bulk_clonotypes_heavy/", full.names = T)
+data_bulk_hc <- map(path_bulk_hc, function(x) read_tsv(x))
+names(data_bulk_hc) <- c("Sample_0_IgA_bulk", "Sample_0_IgD_bulk", "Sample_0_IgG_bulk", "Sample_0_IgM_bulk")
+
+path_bulk_lc <- list.files("./d1_bulk_clonotypes_light/", full.names = T)
+data_bulk_lc <- map(path_bulk_lc, function(x) read_tsv(x))
+names(data_bulk_lc) <- c("Sample_0_IgK_bulk", "Sample_0_IgL_bulk")
+```
+
+# Recover all paired chain for scBCR-seq peptides
+```{r}
+# Load the sc clonotypes BEFORE isotype splitting
+path_sc_hc <- list.files("./d1_sc_clonotypes_heavy/", full.names = T)
+names_sc_hc <- str_remove_all(list.files("./d1_sc_clonotypes_heavy/", full.names = F), ".txt")
+data_sc_hc <- map(path_sc_hc, function(x) read_tsv(x))
+names(data_sc_hc) <- names_sc_hc
+
+path_sc_lc <- list.files("./d1_sc_clonotypes_light/", full.names = T)
+names_sc_lc <- str_remove_all(list.files("./d1_sc_clonotypes_light/", full.names = F), ".txt")
+data_sc_lc <- map(path_sc_lc, function(x) read_tsv(x))
+names(data_sc_lc) <- names_sc_lc
+```
+
+```{r}
+unique_peptide_bulk_hc <- df_cdr3_unique %>% filter(Method == "bulk" & Ref_chain == "Heavy chain")
+ref_bulk_hc <- list()
+for (i in 1:nrow(unique_peptide_bulk_hc)){
+  ref_bulk_hc[[i]] <- data_bulk_hc[[unique_peptide_bulk_hc$BCR_sample[i]]] %>% filter(cloneId == unique_peptide_bulk_hc$Clone_rank[[i]]) %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqImputedVDJRegion)
+}
+
+ref_bulk_hc <- bind_rows(ref_bulk_hc)
+colnames(ref_bulk_hc) <- c("CDR3_sequence_HC", "Clone_ID_HC", "V_gene_HC", "J_gene_HC", "VDJ_sequence_HC")
+
+ref_bulk_hc$VDJ_sequence_HC <- str_remove_all(toupper(ref_bulk_hc$VDJ_sequence_HC), "_")
+ref_bulk_hc <- bind_cols(unique_peptide_bulk_hc[,c("Enzyme", "Sample", "Ab_input_ug", "Isotype", "Sequence")], ref_bulk_hc)
+
+#write_tsv(ref_bulk_hc, "./supp_files/Ab-seq_bulk_hc_peptides.tsv")
+
+unique_peptide_bulk_lc <- df_cdr3_unique %>% filter(Method == "bulk" & Ref_chain == "Light chain")
+ref_bulk_lc <- list()
+for (i in 1:nrow(unique_peptide_bulk_lc)){
+  ref_bulk_lc[[i]] <- data_bulk_lc[[unique_peptide_bulk_lc$BCR_sample[i]]] %>% filter(cloneId == unique_peptide_bulk_lc$Clone_rank[[i]]) %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqImputedVDJRegion)
+}
+
+ref_bulk_lc <- bind_rows(ref_bulk_lc)
+colnames(ref_bulk_lc) <- c("CDR3_sequence_LC", "Clone_ID_LC", "V_gene_LC", "J_gene_LC", "VDJ_sequence_LC")
+
+ref_bulk_lc$VDJ_sequence_LC <- str_remove_all(toupper(ref_bulk_lc$VDJ_sequence_LC), "_")
+ref_bulk_lc <- bind_cols(unique_peptide_bulk_lc[,c("Enzyme", "Sample", "Ab_input_ug", "Isotype", "Sequence")], ref_bulk_lc)
+
+#write_tsv(ref_bulk_lc, "./supp_files/Ab-seq_bulk_lc_peptides.tsv")
+```
+
+```{r}
+df_cdr3_unique$BCR_sample_number <- str_split(df_cdr3_unique$BCR_sample, "_", simplify = T)[,2]
+
+# Recover light chain from heavy chain
+# filter the mixcr file for the clone ids of the Ab-seq peptide hits
+# extract all cell barcodes
+# Use barcodes to find the paired chain
+unique_peptide_sc_hc <- df_cdr3_unique %>% filter(Method == "sc" & Ref_chain == "Heavy chain")
+ref_sc_hc <- list()
+hc_barcode <- list()
+ref_sc_hc_pair <- list()
+for (i in 1:nrow(unique_peptide_sc_hc)){
+  ref_sc_hc[[i]] <- data_sc_hc[[unique_peptide_sc_hc$BCR_sample_number[i]]] %>% filter(cloneId == unique_peptide_sc_hc$Clone_rank[[i]]) %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqImputedVDJRegion, tagValueCELL)
+  hc_barcode[[i]] <- str_replace_all(ref_sc_hc[[i]]$tagValueCELL, ";","|") # Replace the barcode separator by the or symbol to search
+  ref_sc_hc_pair[[i]] <- data_sc_lc[[unique_peptide_sc_hc$BCR_sample_number[i]]] %>% filter(grepl(hc_barcode[[i]], tagValueCELL)) %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqImputedVDJRegion, tagValueCELL)
+}
+
+ref_sc <- bind_cols(bind_rows(ref_sc_hc), bind_rows(ref_sc_hc_pair))
+colnames(ref_sc) <- c("CDR3_sequence_HC", "Clone_ID_HC", "V_gene_HC", "J_gene_HC", "VDJ_sequence_HC", "Cell_barcode_HC",
+                      "CDR3_sequence_LC", "Clone_ID_LC", "V_gene_LC", "J_gene_LC", "VDJ_sequence_LC", "Cell_barcode_LC")
+
+ref_sc$VDJ_sequence_HC <- str_remove_all(toupper(ref_sc$VDJ_sequence_HC), "_")
+ref_sc$VDJ_sequence_LC <- str_remove_all(toupper(ref_sc$VDJ_sequence_LC), "_")
+
+ref_sc <- bind_cols(unique_peptide_sc_hc[,c("Enzyme", "Sample", "Ab_input_ug", "Isotype", "Sequence")], ref_sc)
+
+#write_tsv(ref_sc, "./supp_files/Ab-seq_sc_hc_peptides.tsv")
+
+# Recover heavy chain from light chain
+unique_peptide_sc_lc <- df_cdr3_unique %>% filter(Method == "sc" & Ref_chain == "Light chain")
+ref_sc_lc <- list()
+lc_barcode <- list()
+ref_sc_lc_pair <- list()
+
+for (i in 1:nrow(unique_peptide_sc_lc)){
+  ref_sc_lc[[i]] <- data_sc_lc[[unique_peptide_sc_lc$BCR_sample_number[i]]] %>% filter(cloneId == unique_peptide_sc_lc$Clone_rank[[i]]) %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqImputedVDJRegion, tagValueCELL)
+  lc_barcode[[i]] <- str_replace_all(ref_sc_lc[[i]]$tagValueCELL, ";","|") # Replace the barcode separator by the or symbol to search
+  ref_sc_lc_pair[[i]] <- data_sc_hc[[unique_peptide_sc_lc$BCR_sample_number[i]]] %>% filter(grepl(lc_barcode[[i]], tagValueCELL)) %>% select(aaSeqCDR3, cloneId, bestVGene, bestJGene, aaSeqImputedVDJRegion, tagValueCELL)
+}
+
+ref_sc_2 <- bind_cols(bind_rows(ref_sc_lc), bind_rows(ref_sc_lc_pair))
+colnames(ref_sc_2) <- c("CDR3_sequence_LC", "Clone_ID_LC", "V_gene_LC", "J_gene_LC", "VDJ_sequence_LC", "Cell_barcode_LC",
+                        "CDR3_sequence_HC", "Clone_ID_HC", "V_gene_HC", "J_gene_HC", "VDJ_sequence_HC", "Cell_barcode_HC")
+
+ref_sc_2$VDJ_sequence_HC <- str_remove_all(toupper(ref_sc_2$VDJ_sequence_HC), "_")
+ref_sc_2$VDJ_sequence_LC <- str_remove_all(toupper(ref_sc_2$VDJ_sequence_LC), "_")
+
+ref_sc_2 <- bind_cols(unique_peptide_sc_lc[,c("Enzyme", "Sample", "Ab_input_ug", "Isotype", "Sequence")], ref_sc_2)
+
+#write_tsv(ref_sc_2, "./supp_files/Ab-seq_sc_lc_peptides.tsv")
+
+# Check if Ab-seq peptides recovered both chains of a cell
+# Check for intersect between ref_sc_hc VDJ seq with ref_sc_lc_pair VDJ seq and ref_sc_lc VDJ seq with ref_sc_hc_pair
+intersect(ref_sc$Clone_ID_HC, ref_sc_2$Clone_ID_HC)
+intersect(ref_sc_2$Clone_ID_LC, ref_sc$Clone_ID_LC)
+```
+
+# Alluvial plot to compare BCR isotype to serum Ab isotype
+```{r}
+# Only consider heavy chain isotype
+df_cdr3_unique_isotype <- df_cdr3_unique %>% filter(str_detect(Isotype, "IgA|IgG|IgM") & str_detect(BCR_isotype, "IgA|IgD|IgG|IgM")) %>% group_by(BCR_isotype, Isotype) %>% summarize(Freq = n())
+```
+
+```{r fig.height=6, fig.width=13, warning=FALSE}
+p_abseq_isotype <- ggplot(data = df_cdr3_unique_isotype, aes(y = Freq, axis2 = BCR_isotype, axis1 = Isotype, fill = BCR_isotype)) +
+  geom_alluvium() +
+  scale_fill_manual(values = c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")) +
+  scale_x_discrete(limits = str_wrap(c("Antibody isotype", "BCR isotype"), width = 3), expand = c(0.1, 0.1)) +
+  scale_y_continuous(expand = c(0.02, 0.00), breaks = seq(0, 210, by = 30)) +
+  geom_stratum(fill = "white") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 7) +
+  theme_classic() +
+  theme(legend.key.size = unit(0.5, 'cm'), legend.margin = margin(0,0,0,0),
+        legend.box.margin = margin(-5,-5,-5,-5), legend.box.spacing = unit(10, "pt"), legend.position = "bottom",
+        text = element_text(size = 16)) +
+  labs(y = "CDR3 peptide count", fill = "BCR isotype") +
+  coord_flip()
+
+p_abseq_isotype
+
+#ggsave("./figures/abseq_isotype.pdf", p_abseq_isotype, height = 6, width = 13, dpi = 600)
+```
+
+# CDR3 distance distribution from ref hits of uniquely mapped Ab-seq peptides
+```{r}
+df_ref_2_hc <- df_ref %>% filter(Clonotype %in% df_cdr3_unique$Proteins) %>% filter(str_detect(Isotype, "IgA|IgD|IgG|IgM"))
+df_ref_2_lc <- df_ref %>% filter(Clonotype %in% df_cdr3_unique$Proteins) %>% filter(str_detect(Isotype, "IgK|IgL"))
+
+cdrh3_dist <- stringdistmatrix(df_ref_2_hc$CDR3_seq, method = "lv") # Compute all pairwise LV distance between the CDRH3 sequences
+cdrh3_dist <- as_tibble(table(cdrh3_dist))
+cdrh3_dist$chain <- "Heavy chain"
+colnames(cdrh3_dist)[1] <- "cdr3_dist"
+
+cdrl3_dist <- stringdistmatrix(df_ref_2_lc$CDR3_seq, method = "lv")
+cdrl3_dist <- as_tibble(table(cdrl3_dist))
+cdrl3_dist$chain <- "Light chain"
+colnames(cdrl3_dist)[1] <- "cdr3_dist"
+
+cdr3_dist <- rbind(cdrh3_dist, cdrl3_dist)
+cdr3_dist$cdr3_dist <- as.numeric(cdr3_dist$cdr3_dist)
+```
+
+```{r fig.height=6, fig.width=13}
+p_abseq_cdr3_dist <- ggplot(cdr3_dist, aes(x = cdr3_dist, y = n)) +
+  geom_col(fill = "#588DE0") +
+  geom_text(aes(label = n), vjust = -0.20) +
+  scale_x_continuous(breaks = seq(0, 30, by = 3)) +
+  scale_y_continuous(breaks = seq(0, 2500, by = 500), limits = c(0,2700)) +
+  theme_classic() +
+  theme(text = element_text(size = 14)) +
+  labs(x = "CDR3 Levenshtein distance", y = "Pairwise comparison count") +
+  facet_grid(rows = vars(chain))
+
+p_abseq_cdr3_dist
+
+#ggsave("./figures/abseq_cdr3_dist.pdf", p_abseq_cdr3_dist, height = 6, width = 13, dpi = 600)
+```
